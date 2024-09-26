@@ -218,13 +218,13 @@ class EQStream : public EQStreamInterface {
 
 		void init(bool resetSession=true);
 	public:
-		EQStream() { init(); remote_ip = 0; remote_port = 0; State = UNESTABLISHED; 
-			StreamType = UnknownStream; compressed = true; encoded = false; app_opcode_size = 2; 
-			bytes_sent = 0; bytes_recv = 0; create_time = Timer::GetTimeSeconds(); sessionAttempts = 0; 
+		EQStream() { init(); remote_ip = 0; remote_port = 0; State = UNESTABLISHED;
+			StreamType = UnknownStream; compressed = true; encoded = false; app_opcode_size = 2;
+			bytes_sent = 0; bytes_recv = 0; create_time = Timer::GetTimeSeconds(); sessionAttempts = 0;
 			streamactive = false; }
-		EQStream(sockaddr_in addr) { init(); remote_ip = addr.sin_addr.s_addr; 
-			remote_port = addr.sin_port; State = UNESTABLISHED; StreamType = UnknownStream; 
-			compressed = true; encoded = false; app_opcode_size = 2; bytes_sent = 0; bytes_recv = 0; 
+		EQStream(sockaddr_in addr) { init(); remote_ip = addr.sin_addr.s_addr;
+			remote_port = addr.sin_port; State = UNESTABLISHED; StreamType = UnknownStream;
+			compressed = true; encoded = false; app_opcode_size = 2; bytes_sent = 0; bytes_recv = 0;
 			create_time = Timer::GetTimeSeconds(); }
 		virtual ~EQStream() { RemoveData(); SetState(CLOSED); }
 		void SetMaxLen(uint32 length) { MaxLen=length; }
@@ -241,7 +241,12 @@ class EQStream : public EQStreamInterface {
 		virtual bool CheckState(EQStreamState state) { return GetState() == state; }
 		virtual std::string Describe() const { return("Direct EQStream"); }
 
-		void SetOpcodeManager(OpcodeManager **opm) { OpMgr = opm; }
+		virtual void SetOpcodeManager(OpcodeManager **opm) { OpMgr = opm; }
+
+		virtual OpcodeManager* GetOpcodeManager() const
+		{
+			return (*OpMgr);
+		};
 
 		void CheckTimeout(uint32 now, uint32 timeout=30);
 		bool HasOutgoingData();
@@ -250,13 +255,13 @@ class EQStream : public EQStreamInterface {
 		void Write(int eq_fd);
 
 		// whether or not the stream has been assigned (we passed our stream match)
-		void SetActive(bool val) { streamactive = val; }
+		virtual void SetActive(bool val) { streamactive = val; }
 
 		//
 		inline bool IsInUse() { bool flag; MInUse.lock(); flag=(active_users>0); MInUse.unlock(); return flag; }
 		inline void PutInUse() { MInUse.lock(); active_users++; MInUse.unlock(); }
 
-		inline EQStreamState GetState() { EQStreamState s; MState.lock(); s=State; MState.unlock(); return s; }
+		virtual EQStreamState GetState() { EQStreamState s; MState.lock(); s=State; MState.unlock(); return s; }
 
 		static SeqOrder CompareSequence(uint16 expected_seq , uint16 seq);
 
@@ -306,19 +311,7 @@ class EQStream : public EQStreamInterface {
 		const uint64 GetPacketsReceived() { return received_packet_count; }
 
 		//used for dynamic stream identification
-		class Signature {
-		public:
-			//this object could get more complicated if needed...
-			uint16 ignore_eq_opcode;		//0=dont ignore
-			uint16 first_eq_opcode;
-			uint32 first_length;			//0=dont check length
-		};
-		typedef enum {
-			MatchNotReady,
-			MatchSuccessful,
-			MatchFailed
-		} MatchState;
-		MatchState CheckSignature(const Signature *sig);
+		virtual MatchState CheckSignature(const Signature *sig);
 
 };
 

@@ -21,24 +21,36 @@
 #include "../common/global_define.h"
 #include "clientlist.h"
 #include "../common/opcodemgr.h"
-#include "../common/eq_stream_factory.h"
 #include "../common/rulesys.h"
 #include "../common/servertalk.h"
 #include "../common/platform.h"
 #include "../common/crash.h"
+#include "../common/event/event_loop.h"
 #include "database.h"
 #include "ucsconfig.h"
 #include "chatchannel.h"
 #include "worldserver.h"
 #include <list>
 #include <signal.h>
+#include <csignal>
+#include <thread>
+
+#include "../common/net/tcp_server.h"
+#include "../common/net/servertalk_client_connection.h"
+#include "../common/discord/discord_manager.h"
+#include "../common/path_manager.h"
+#include "../common/zone_store.h"
+#include "../common/events/player_event_logs.h"
 
 ChatChannelList *ChannelList;
 Clientlist *g_Clientlist;
-EQEmuLogSys Log;
-TimeoutManager timeout_manager;
-Database database;
+EQEmuLogSys LogSys;
+UCSDatabase database;
 WorldServer *worldserver = nullptr;
+DiscordManager discord_manager;
+PathManager path;
+ZoneStore zone_store;
+PlayerEventLogs player_event_logs;
 
 const ucsconfig *Config;
 
@@ -47,45 +59,75 @@ std::string WorldShortName;
 uint32 ChatMessagesSent = 0;
 uint32 MailMessagesSent = 0;
 
-volatile bool RunLoops = true;
-
-void CatchSignal(int sig_num) {
-
-	RunLoops = false;
-
-	if(worldserver)
-		worldserver->Disconnect();
-}
-
 std::string GetMailPrefix() {
 
 	return "SOE.EQ." + WorldShortName + ".";
 
 }
 
+void crash_func() {
+	std::this_thread::sleep_for(std::chrono::milliseconds(10000));
+	int* p=0;
+	*p=0;
+}
+
+void Shutdown() {
+	LogInfo("Shutting down...");
+	ChannelList->RemoveAllChannels();
+	g_Clientlist->CloseAllConnections();
+	LogSys.CloseFileLogs();
+}
+
+int caught_loop = 0;
+void CatchSignal(int sig_num) {
+	LogInfo("Caught signal [{}]", sig_num);
+
+	EQ::EventLoop::Get().Shutdown();
+
+	caught_loop++;
+	// when signal handler is incapable of exiting properly
+	if (caught_loop > 1) {
+		LogInfo("In a signal handler loop and process is incapable of exiting properly, forcefully cleaning up");
+		ChannelList->RemoveAllChannels();
+		g_Clientlist->CloseAllConnections();
+		LogSys.CloseFileLogs();
+		std::exit(0);
+	}
+}
+
+void PlayerEventQueueListener() {
+	while (caught_loop == 0) {
+		discord_manager.ProcessMessageQueue();
+		Sleep(100);
+	}
+}
+
 int main() {
 	RegisterExecutablePlatform(ExePlatformUCS);
-	Log.LoadLogSettingsDefaults();
+	LogSys.LoadLogSettingsDefaults();
 	set_exception_handler();
+
+	path.LoadPaths();
 
 	// Check every minute for unused channels we can delete
 	//
 	Timer ChannelListProcessTimer(60000);
+	Timer ClientConnectionPruneTimer(60000);
 
-	Timer InterserverTimer(INTERSERVER_TIMER); // does auto-reconnect
+	Timer keepalive(INTERSERVER_TIMER); // does auto-reconnect
 
-	Log.Out(Logs::General, Logs::UCS_Server, "Starting EQEmu Universal Chat Server.");
+	LogInfo("Starting EQEmu Universal Chat Server");
 
-	if (!ucsconfig::LoadConfig()) { 
-		Log.Out(Logs::General, Logs::UCS_Server, "Loading server configuration failed."); 
+	if (!ucsconfig::LoadConfig()) {
+		LogInfo("Loading server configuration failed");
 		return 1;
 	}
 
-	Config = ucsconfig::get(); 
+	Config = ucsconfig::get();
 
 	WorldShortName = Config->ShortName;
 
-	Log.Out(Logs::General, Logs::UCS_Server, "Connecting to MySQL...");
+	LogInfo("Connecting to MySQL");
 
 	if (!database.Connect(
 		Config->DatabaseHost.c_str(),
@@ -93,82 +135,80 @@ int main() {
 		Config->DatabasePassword.c_str(),
 		Config->DatabaseDB.c_str(),
 		Config->DatabasePort)) {
-		Log.Out(Logs::General, Logs::UCS_Server, "Cannot continue without a database connection.");
+		LogInfo("Cannot continue without a database connection");
 		return 1;
 	}
 
-	/* Register Log System and Settings */
-	database.LoadLogSettings(Log.log_settings);
-	Log.StartFileLogs();
+	LogSys.SetDatabase(&database)
+		->SetLogPath(path.GetLogPath())
+		->LoadLogDatabaseSettings()
+		->StartFileLogs();
+
+	player_event_logs.SetDatabase(&database)->Init();
 
 	char tmp[64];
 
+	// ucs has no 'reload rules' handler
 	if (database.GetVariable("RuleSet", tmp, sizeof(tmp)-1)) {
-		Log.Out(Logs::General, Logs::UCS_Server, "Loading rule set '%s'", tmp);
-		if(!RuleManager::Instance()->LoadRules(&database, tmp)) {
-			Log.Out(Logs::General, Logs::UCS_Server, "Failed to load ruleset '%s', falling back to defaults.", tmp);
+		LogInfo("Loading rule set [{}]", tmp);
+		if(!RuleManager::Instance()->LoadRules(&database, tmp, false)) {
+			LogInfo("Failed to load ruleset [{}], falling back to defaults", tmp);
 		}
 	} else {
-		if(!RuleManager::Instance()->LoadRules(&database, "default")) {
-			Log.Out(Logs::General, Logs::UCS_Server, "No rule set configured, using default rules");
-		} else {
-			Log.Out(Logs::General, Logs::UCS_Server, "Loaded default rule set 'default'", tmp);
+		if(!RuleManager::Instance()->LoadRules(&database, "default", false)) {
+			LogInfo("No rule set configured, using default rules");
 		}
 	}
+
+	EQ::InitializeDynamicLookups();
 
 	database.ExpireMail();
 
-	if(Config->ChatPort != Config->MailPort)
-	{
-		Log.Out(Logs::General, Logs::UCS_Server, "MailPort and CharPort must be the same in eqemu_config.xml for UCS.");
-		exit(1);
-	}
-
-	g_Clientlist = new Clientlist(Config->ChatPort);
+	g_Clientlist = new Clientlist(Config->GetUCSPort());
 
 	ChannelList = new ChatChannelList();
 
 	database.LoadChatChannels();
 
-	if (signal(SIGINT, CatchSignal) == SIG_ERR)	{
-		Log.Out(Logs::General, Logs::UCS_Server, "Could not set signal handler");
-		return 1;
-	}
-	if (signal(SIGTERM, CatchSignal) == SIG_ERR)	{
-		Log.Out(Logs::General, Logs::UCS_Server, "Could not set signal handler");
-		return 1;
-	}
+	std::signal(SIGINT, CatchSignal);
+	std::signal(SIGTERM, CatchSignal);
+	std::signal(SIGKILL, CatchSignal);
+	std::signal(SIGSEGV, CatchSignal);
+
+	std::thread(PlayerEventQueueListener).detach();
 
 	worldserver = new WorldServer;
 
-	worldserver->Connect();
+	// uncomment to simulate timed crash for catching SIGSEV
+//	std::thread crash_test(crash_func);
+//	crash_test.detach();
 
-	while(RunLoops) {
+	auto loop_fn = [&](EQ::Timer* t) {
+		if (keepalive.Check()) {
+			keepalive.Start();
+			database.ping();
+		}
 
 		Timer::SetCurrentTime();
 
 		g_Clientlist->Process();
 
-		if(ChannelListProcessTimer.Check())
+		if (ChannelListProcessTimer.Check()) {
 			ChannelList->Process();
-
-		if (InterserverTimer.Check()) {
-			if (worldserver->TryReconnect() && (!worldserver->Connected()))
-				worldserver->AsyncConnect();
 		}
-		worldserver->Process();
 
-		timeout_manager.CheckTimeouts();
+		if (ClientConnectionPruneTimer.Check()) {
+			g_Clientlist->CheckForStaleConnectionsAll();
+		}
 
-		Sleep(100);
-	}
+	};
 
-	ChannelList->RemoveAllChannels();
+	EQ::Timer process_timer(loop_fn);
+	process_timer.Start(32, true);
 
-	g_Clientlist->CloseAllConnections();
+	EQ::EventLoop::Get().Run();
 
-	Log.CloseFileLogs();
-
+	Shutdown();
 }
 
 void UpdateWindowTitle(char* iNewTitle) {

@@ -1,4 +1,4 @@
-CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.2)
 
 ADD_SUBDIRECTORY(cppunit)
 
@@ -16,13 +16,14 @@ SET(tests_headers
 	memory_mapped_file_test.h
 	string_util_test.h
 	skills_util_test.h
+	task_state_test.h
 )
 
 ADD_EXECUTABLE(tests ${tests_sources} ${tests_headers})
 
-TARGET_LINK_LIBRARIES(tests common cppunit)
+TARGET_LINK_LIBRARIES(tests common cppunit fmt ${SERVER_LIBS})
 
-INSTALL(TARGETS tests RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX})
+INSTALL(TARGETS tests RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX}/bin)
 
 IF(MSVC)
 	SET_TARGET_PROPERTIES(tests PROPERTIES LINK_FLAGS_RELEASE "/OPT:REF /OPT:ICF")

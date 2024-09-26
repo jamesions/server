@@ -35,11 +35,6 @@ Core Zone features
 
 */
 
-
-//Uncomment this to cause a zone to basically idle
-//when there are no players in it, mobs stop wandering, etc..
-#define IDLE_WHEN_EMPTY
-
 #ifdef EMBPERL
 //Enable the new XS based perl parser
 #define EMBPERL_XS
@@ -111,9 +106,6 @@ Zone extensions and features
 //path to where sql logs should be placed
 #define SQL_LOG_PATH "sql_logs/"
 
-//New aggro system to reduce overhead.
-#define REVERSE_AGGRO
-
 //The highest you can #setskill / #setallskill
 #define HIGHEST_CAN_SET_SKILL 400
 
@@ -135,7 +127,7 @@ enum {	//reuse times
 	InstillDoubtReuseTime = 9,
 	FishingReuseTime = 11,
 	ForagingReuseTime = 50,
-	MendReuseTime = 290,
+	MendReuseTime = 360,
 	BashReuseTime = 5,
 	BackstabReuseTime = 9,
 	KickReuseTime = 5,
@@ -153,17 +145,17 @@ enum {	//reuse times
 
 enum {	//timer settings, all in milliseconds
 	AImovement_duration = 100,
-	AIthink_duration = 150,
+	AIthink_duration = 50,
 	AIscanarea_delay = 6000,
 	AIfeignremember_delay = 500,
 	AItarget_check_duration = 500,
-	AIClientScanarea_delay = 750,	//used in REVERSE_AGGRO
+	AI_scan_door_open_interval = 1000,
+	// AIClientScanarea_delay = 750,	//used in REVERSE_AGGRO
 	AIassistcheck_delay = 3000,		//now often a fighting NPC will yell for help
 	AI_check_signal_timer_delay = 500, // How often EVENT_SIGNAL checks are processed
 	ClientProximity_interval = 150,
 	CombatEventTimer_expire = 12000,
 	Tribute_duration = 600000,
-	ZoneTimerResolution = 3,			//sleep time between zone main loop runs (milliseconds)
 	FeignMemoryDuration = 120000, // Duration player must feign death to clear zonewide agro.
 	EnragedTimer = 360000,
 	EnragedDurationTimer = 10000
@@ -207,7 +199,7 @@ enum {	//some random constants
 #define MIN_LEVEL_ALCHEMY 25
 
 //chance ratio that a
-#define THREATENLY_ARRGO_CHANCE 32 // 32/128 (25%) chance that a mob will arrgo on con Threatenly
+#define THREATENINGLY_AGGRO_CHANCE 32 // 32/128 (25%) chance that a mob will arrgo on con Threatenly
 
 //max factions per npc faction list
 #define MAX_NPC_FACTIONS 20
@@ -221,11 +213,14 @@ enum {	//some random constants
 #define HARD_LEVEL_CAP 127
 
 //the square of the maximum range at whihc you could possibly use NPC services (shop, tribute, etc)
-#define USE_NPC_RANGE2 200*200		//arbitrary right now
+#define USE_NPC_RANGE2 40000		//arbitrary right now
+
+// Squared range for rampage 75.0 * 75.0 for now
+#define NPC_RAMPAGE_RANGE2 5625.0f
 
 //the formula for experience for killing a mob.
 //level is the only valid variable to use
-#define EXP_FORMULA level*level*75*35/10
+#define EXP_FORMULA (level * level * 75 * 35 / 10)
 
 #define HIGHEST_AA_VALUE 35
 
@@ -238,47 +233,14 @@ enum {	//some random constants
 // Timer to update aggrometer
 #define AGGRO_METER_UPDATE_MS 1000
 
-//Some hard coded statuses from commands and other places:
-enum {
-	minStatusToBeGM = 40,
-	minStatusToUseGMCommands = 80,
-	minStatusToKick = 150,
-	minStatusToAvoidFalling = 100,
-	minStatusToHaveInvalidSpells = 80,
-	minStatusToHaveInvalidSkills = 80,
-	minStatusToIgnoreZoneFlags = 80,
-	minStatusToSeeOthersZoneFlags = 80,
-	minStatusToEditOtherGuilds = 80,
-	commandMovecharSelfOnly = 80,	//below this == only self move allowed
-	commandMovecharToSpecials = 200,	//ability to send people to cshom/load zones
-	commandZoneToSpecials = 80,		//zone to cshome, out of load zones
-	commandToggleAI = 250,			//can turn NPC AI on and off
-	commandCastSpecials = 100,		//can cast special spells
-	commandInstacast = 100,			//insta-cast all #casted spells
-	commandLevelAboveCap = 100,		//can #level players above level cap
-	commandLevelNPCAboveCap = 100,	//can #level NPCs above level cap
-	commandSetSkillsOther = 100,	//ability to setskills on others
-	commandRaceOthers = 100,	//ability to #race on others
-	commandGenderOthers = 100,	//ability to #gender on others
-	commandTextureOthers = 100,	//ability to #texture on others
-	commandDoAnimOthers = 100,	//can #doanim on others
-	commandLockZones = 101,		//can lock or unlock zones
-	commandEditPlayerCorpses = 150,	//can Edit Player Corpses
-	commandChangeFlags = 200,		//ability to set/refresh flags
-	commandBanPlayers = 100,		//can set bans on players
-	commandChangeDatarate = 201,	//edit client's data rate
-	commandZoneToCoords = 0,		//can #zone with coords
-	commandInterrogateInv = 100		//below this == only log on error state and self-only target dump
-};
-
-//default states for logging flag on NPCs and clients (having NPCs on by default is prolly a bad idea)
-#define CLIENT_DEFAULT_LOGGING_ENABLED true
-#define NPC_DEFAULT_LOGGING_ENABLED false
-
-
 // This is the item ID we use for say links, we use the max that fits in 5 ASCII chars
 #define SAYLINK_ITEM_ID 0xFFFFF
 
+
+// consumption timers for food/drink here instead of rules because the client
+// uses these. Times in ms.
+#define CONSUMPTION_TIMER 46000
+#define CONSUMPTION_MNK_TIMER 92000
 
 /*
 
@@ -293,7 +255,7 @@ Developer configuration
 
 #define COMMON_PROFILE
 
-#define PROFILE_DUMP_TIME 3*60
+#define PROFILE_DUMP_TIME 180
 #endif	//EQPROFILE
 
 

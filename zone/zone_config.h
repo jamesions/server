@@ -43,13 +43,13 @@ class ZoneConfig : public EQEmuConfig {
 	}
 
 	// Load the config
-	static bool LoadConfig() {
+	static bool LoadConfig(const std::string& path = "") {
 		if (_zone_config != nullptr)
 			delete _zone_config;
 		_zone_config=new ZoneConfig;
 		_config=_zone_config;
 
-		return _config->ParseFile(EQEmuConfig::ConfigFile.c_str(),"server");
+		return _config->parseFile(path);
 	}
 
 	// Accessors for the static private object

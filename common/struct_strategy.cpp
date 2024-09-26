@@ -3,7 +3,8 @@
 #include "eqemu_logsys.h"
 #include "struct_strategy.h"
 
-#include "eq_stream.h"
+#include "eq_stream_intf.h"
+#include "opcodemgr.h"
 #include <map>
 #include <memory>
 
@@ -18,7 +19,7 @@ StructStrategy::StructStrategy() {
 	}
 }
 
-void StructStrategy::Encode(EQApplicationPacket **p, std::shared_ptr<EQStream> dest, bool ack_req) const {
+void StructStrategy::Encode(EQApplicationPacket **p, std::shared_ptr<EQStreamInterface> dest, bool ack_req) const {
 	if((*p)->GetOpcodeBypass() != 0) {
 		PassEncoder(p, dest, ack_req);
 		return;
@@ -36,21 +37,21 @@ void StructStrategy::Decode(EQApplicationPacket *p) const {
 }
 
 
-void StructStrategy::ErrorEncoder(EQApplicationPacket **in_p, std::shared_ptr<EQStream> dest, bool ack_req) {
+void StructStrategy::ErrorEncoder(EQApplicationPacket **in_p, std::shared_ptr<EQStreamInterface> dest, bool ack_req) {
 	EQApplicationPacket *p = *in_p;
 	*in_p = nullptr;
 
-	Log.Out(Logs::General, Logs::Netcode, "[STRUCTS] Error encoding opcode %s: no encoder provided. Dropping.", OpcodeManager::EmuToName(p->GetOpcode()));
+	LogNetcode("[STRUCTS] Error encoding opcode [{}]: no encoder provided. Dropping", OpcodeManager::EmuToName(p->GetOpcode()));
 
 	delete p;
 }
 
 void StructStrategy::ErrorDecoder(EQApplicationPacket *p) {
-	Log.Out(Logs::General, Logs::Netcode, "[STRUCTS] Error decoding opcode %s: no decoder provided. Invalidating.", OpcodeManager::EmuToName(p->GetOpcode()));
+	LogNetcode("[STRUCTS] Error decoding opcode [{}]: no decoder provided. Invalidating", OpcodeManager::EmuToName(p->GetOpcode()));
 	p->SetOpcode(OP_Unknown);
 }
 
-void StructStrategy::PassEncoder(EQApplicationPacket **p, std::shared_ptr<EQStream> dest, bool ack_req) {
+void StructStrategy::PassEncoder(EQApplicationPacket **p, std::shared_ptr<EQStreamInterface> dest, bool ack_req) {
 	dest->FastQueuePacket(p, ack_req);
 }
 
@@ -68,14 +69,6 @@ namespace StructStrategyFactory {
 
 	void RegisterPatch(EmuOpcode first_opcode, const StructStrategy *structs) {
 		strategies[first_opcode] = structs;
-	}
-
-	const StructStrategy *FindPatch(EmuOpcode first_opcode) {
-		std::map<EmuOpcode, const StructStrategy *>::const_iterator res;
-		res = strategies.find(first_opcode);
-		if(res == strategies.end())
-			return(nullptr);
-		return(res->second);
 	}
 
 };

@@ -2,6 +2,7 @@
 #define AA_H
 
 #define MAX_SWARM_PETS 12	//this can change as long as you make more coords (swarm_pet_x/swarm_pet_y)
+#define WAKE_THE_DEAD_NPCTYPEID 500 //We use first pet in pets table as a template
 
 typedef enum {
 	aaActionNone				= 0,
@@ -1511,7 +1512,7 @@ typedef enum {	//AA IDs
 } aaID;
 
 //Structure representing the database's swarm pet configs
-struct AA_SwarmPet {
+struct SwarmPet_Struct {
 	uint8 count;		//number to summon
 	uint32 npc_id;		//id from npc_types to represent it.
 	uint16 duration;		//how long they last, in seconds
@@ -1524,12 +1525,25 @@ enum {	//values of AA_Action.action
 	aaActionBuy = 3
 };
 
+namespace AACategory {
+	constexpr int None          = -1;
+	constexpr int Passive       = 1;
+	constexpr int Progression   = 2;
+	constexpr int ShroudPassive = 3;
+	constexpr int ShroudActive  = 4;
+	constexpr int VeteranReward = 5;
+	constexpr int Tradeskill    = 6;
+	constexpr int Expendable    = 7;
+	constexpr int RacialInnate  = 8;
+	constexpr int EverQuest     = 9;
+}
+
 class Timer;
 class Mob;
-class AA_SwarmPetInfo {
+class SwarmPet {
 public:
-	AA_SwarmPetInfo();
-	~AA_SwarmPetInfo();
+	SwarmPet();
+	~SwarmPet();
 	Mob * GetOwner();
 	Timer *duration;
 	uint32 target; //the target ID

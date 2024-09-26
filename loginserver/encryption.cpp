@@ -1,145 +1,372 @@
-/*	EQEMu: Everquest Server Emulator
-	Copyright (C) 2001-2010 EQEMu Development Team (http://eqemulator.net)
-
-	This program is free software; you can redistribute it and/or modify
-	it under the terms of the GNU General Public License as published by
-	the Free Software Foundation; version 2 of the License.
-
-	This program is distributed in the hope that it will be useful,
-	but WITHOUT ANY WARRANTY except by those people which sell it, which
-	are required to give you total support for your newly bought product;
-	without even the implied warranty of MERCHANTABILITY or FITNESS FOR
-	A PARTICULAR PURPOSE. See the GNU General Public License for more details.
-
-	You should have received a copy of the GNU General Public License
-	along with this program; if not, write to the Free Software
-	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
-*/
-#include "../common/global_define.h"
 #include "encryption.h"
-#include <string>
 
-#include "../common/eqemu_logsys.h"
-extern EQEmuLogSys Log;
-
-bool Encryption::LoadCrypto(std::string name)
-{
-	if(!Load(name.c_str()))
-	{
-		Log.Out(Logs::General, Logs::Error, "Failed to load %s from the operating system.", name.c_str());
-		return false;
-	}
-	else
-	{
-		encrypt_func = (DLLFUNC_Encrypt)GetSym("Encrypt");
-		if(encrypt_func == NULL)
-		{
-			Log.Out(Logs::General, Logs::Error, "Failed to attach Encrypt.");
-			Unload();
-			return false;
-		}
-		decrypt_func = (DLLFUNC_DecryptUsernamePassword)GetSym("DecryptUsernamePassword");
-		if(decrypt_func == NULL)
-		{
-			Log.Out(Logs::General, Logs::Error, "Failed to attach DecryptUsernamePassword.");
-			Unload();
-			return false;
-		}
-		delete_func = (DLLFUNC_HeapDelete)GetSym("_HeapDeleteCharBuffer");
-		if(delete_func == NULL)
-		{
-			Log.Out(Logs::General, Logs::Error, "Failed to attach _HeapDeleteCharBuffer.");
-			Unload();
-			return false;
-		}
-	}
-	return true;
-}
-
-char *Encryption::DecryptUsernamePassword(const char* encrypted_buffer, unsigned int buffer_size, int mode)
-{
-	if(decrypt_func)
-	{
-		return decrypt_func(encrypted_buffer, buffer_size, mode);
-	}
-	return NULL;
-}
-
-char *Encryption::Encrypt(const char* buffer, unsigned int buffer_size, unsigned int &out_size)
-{
-	if(encrypt_func)
-	{
-		return encrypt_func(buffer, buffer_size, out_size);
-	}
-	return NULL;
-}
-
-void Encryption::DeleteHeap(char *buffer)
-{
-	if(delete_func)
-	{
-		delete_func(buffer);
-	}
-}
-
-bool Encryption::Load(const char *name)
-{
-	SetLastError(0);
-#ifdef UNICODE
-	int name_length = strlen(name);
-	int wide_length = MultiByteToWideChar(CP_ACP, 0, name, name_length+1, 0, 0);
-	WCHAR *wide_string = new WCHAR[wide_length];
-	MultiByteToWideChar(CP_ACP, 0, name, name_length+1, wide_string, wide_length);
-
-	h_dll = LoadLibrary(wide_string);
-	delete[] wide_string;
-#else
-	h_dll = LoadLibrary(name);
+#ifdef EQEMU_USE_OPENSSL
+#include <openssl/des.h>
+#include <openssl/sha.h>
+#include <openssl/md5.h>
+#endif
+#ifdef EQEMU_USE_MBEDTLS
+#include <mbedtls/des.h>
+#include <mbedtls/md5.h>
+#include <mbedtls/sha1.h>
+#include <mbedtls/sha512.h>
 #endif
 
-	if(h_dll == NULL)
-	{
-		return false;
-	}
-	else
-	{
-		SetLastError(0);
-	}
+#include <cstring>
+#include <string>
 
-	return true;
-}
+#ifdef ENABLE_SECURITY
 
-void Encryption::Unload()
+#include <sodium.h>
+
+#endif
+
+/**
+ * @param mode
+ * @return
+ */
+std::string GetEncryptionByModeId(uint32 mode)
 {
-	if(h_dll)
-	{
-		FreeLibrary(h_dll);
-		h_dll = NULL;
+	switch (mode) {
+		case EncryptionModeMD5:
+			return "MD5";
+		case EncryptionModeMD5PassUser:
+			return "MD5PassUser";
+		case EncryptionModeMD5UserPass:
+			return "MD5UserPass";
+		case EncryptionModeMD5Triple:
+			return "MD5Triple";
+		case EncryptionModeSHA:
+			return "SHA";
+		case EncryptionModeSHAPassUser:
+			return "SHAPassUser";
+		case EncryptionModeSHAUserPass:
+			return "SHAUserPass";
+		case EncryptionModeSHATriple:
+			return "SHATriple";
+		case EncryptionModeSHA512:
+			return "SHA512";
+		case EncryptionModeSHA512PassUser:
+			return "SHA512PassUser";
+		case EncryptionModeSHA512UserPass:
+			return "SHA512UserPass";
+		case EncryptionModeSHA512Triple:
+			return "SHA512Triple";
+		case EncryptionModeArgon2:
+			return "Argon2";
+		case EncryptionModeSCrypt:
+			return "SCrypt";
+		default:
+			return "";
 	}
 }
 
-bool Encryption::GetSym(const char *name, void **sym)
+/**
+ * @param buffer_in
+ * @param buffer_in_sz
+ * @param buffer_out
+ * @param enc
+ * @return
+ */
+const char *eqcrypt_block(const char *buffer_in, size_t buffer_in_sz, char *buffer_out, bool enc)
 {
-	if(Loaded())
-	{
-		*sym = GetProcAddress(h_dll, name);
-		return(*sym != NULL);
+#ifdef EQEMU_USE_MBEDTLS
+	if (enc) {
+		if (buffer_in_sz % 8 != 0) {
+			auto temp_buffer_sz = ((buffer_in_sz / 8) + 1) * 8;
+			unsigned char *temp_buffer = new unsigned char[temp_buffer_sz];
+			unsigned char *temp_buffer_in = &temp_buffer[0];
+			unsigned char *temp_buffer_out = &temp_buffer[temp_buffer_sz];
+
+			memset(temp_buffer, 0, temp_buffer_sz * 2);
+			memcpy(temp_buffer_in, buffer_in, buffer_in_sz);
+
+			unsigned char key[MBEDTLS_DES_KEY_SIZE];
+			unsigned char iv[8];
+			memset(&key, 0, MBEDTLS_DES_KEY_SIZE);
+			memset(&iv, 0, 8);
+
+			mbedtls_des_context context;
+			mbedtls_des_setkey_enc(&context, key);
+			mbedtls_des_crypt_cbc(&context, MBEDTLS_DES_ENCRYPT, temp_buffer_sz, iv, (const unsigned char*)temp_buffer_in, (unsigned char*)temp_buffer_out);
+
+			memcpy(buffer_out, temp_buffer_out, temp_buffer_sz);
+			delete[] temp_buffer;
+		}
+		else {
+			unsigned char key[MBEDTLS_DES_KEY_SIZE];
+			unsigned char iv[8];
+			memset(&key, 0, MBEDTLS_DES_KEY_SIZE);
+			memset(&iv, 0, 8);
+
+			mbedtls_des_context context;
+			mbedtls_des_setkey_enc(&context, key);
+			mbedtls_des_crypt_cbc(&context, MBEDTLS_DES_ENCRYPT, buffer_in_sz, iv, (const unsigned char*)buffer_in, (unsigned char*)buffer_out);
+		}
 	}
-	else
-	{
-		return false;
+	else {
+		if (buffer_in_sz && buffer_in_sz % 8 != 0) {
+			return nullptr;
+		}
+
+		unsigned char key[MBEDTLS_DES_KEY_SIZE];
+		unsigned char iv[8];
+		memset(&key, 0, MBEDTLS_DES_KEY_SIZE);
+		memset(&iv, 0, 8);
+	
+		mbedtls_des_context context;
+		mbedtls_des_setkey_dec(&context, key);
+		mbedtls_des_crypt_cbc(&context, MBEDTLS_DES_DECRYPT, buffer_in_sz, iv, (const unsigned char*)buffer_in, (unsigned char*)buffer_out);
 	}
+#endif
+
+#ifdef EQEMU_USE_OPENSSL
+	DES_key_schedule k;
+	DES_cblock v;
+	
+	memset(&k, 0, sizeof(DES_key_schedule));
+	memset(&v, 0, sizeof(DES_cblock));
+	
+	if (!enc && buffer_in_sz && buffer_in_sz % 8 != 0) {
+		return nullptr;
+	}
+	
+	DES_ncbc_encrypt((const unsigned char*)buffer_in, (unsigned char*)buffer_out, (long)buffer_in_sz, &k, &v, enc);
+#endif
+	return buffer_out;
 }
 
-void *Encryption::GetSym(const char *name)
+/**
+ * @param msg
+ * @return
+ */
+std::string eqcrypt_md5(const std::string &msg)
 {
-	if(Loaded())
-	{
-		return GetProcAddress(h_dll, name);
+	std::string ret;
+	ret.reserve(32);
+
+#ifdef EQEMU_USE_MBEDTLS
+	unsigned char digest[16];
+	char temp[4];
+
+	if (0 == mbedtls_md5_ret((const unsigned char*)msg.c_str(), msg.length(), digest)) {
+		for (int i = 0; i < 16; ++i) {
+			sprintf(&temp[0], "%02x", digest[i]);
+			ret.push_back(temp[0]);
+			ret.push_back(temp[1]);
+		}
 	}
-	else
-	{
-		return NULL;
+#endif
+
+#ifdef EQEMU_USE_OPENSSL
+	unsigned char md5_digest[16];
+	char tmp[4];
+
+	MD5((const unsigned char*)msg.c_str(), msg.length(), md5_digest);
+
+	for (int i = 0; i < 16; ++i) {
+		sprintf(&tmp[0], "%02x", md5_digest[i]);
+		ret.push_back(tmp[0]);
+		ret.push_back(tmp[1]);
+	}
+#endif
+
+	return ret;
+}
+
+/**
+ * @param msg
+ * @return
+ */
+std::string eqcrypt_sha1(const std::string &msg)
+{
+	std::string ret;
+	ret.reserve(40);
+
+#ifdef EQEMU_USE_MBEDTLS
+	unsigned char digest[20];
+	char temp[4];
+
+	if (0 == mbedtls_sha1_ret((const unsigned char*)msg.c_str(), msg.length(), digest)) {
+		for (int i = 0; i < 20; ++i) {
+			sprintf(&temp[0], "%02x", digest[i]);
+			ret.push_back(temp[0]);
+			ret.push_back(temp[1]);
+		}
+	}
+#endif
+
+#ifdef EQEMU_USE_OPENSSL
+	unsigned char sha_digest[20];
+	char tmp[4];
+
+	SHA1((const unsigned char*)msg.c_str(), msg.length(), sha_digest);
+
+	for (int i = 0; i < 20; ++i) {
+		sprintf(&tmp[0], "%02x", sha_digest[i]);
+		ret.push_back(tmp[0]);
+		ret.push_back(tmp[1]);
+	}
+#endif
+
+	return ret;
+}
+
+/**
+ * @param msg
+ * @return
+ */
+std::string eqcrypt_sha512(const std::string &msg)
+{
+	std::string ret;
+	ret.reserve(128);
+
+#ifdef EQEMU_USE_MBEDTLS
+	unsigned char digest[64];
+	char temp[4];
+
+	if (0 == mbedtls_sha512_ret((const unsigned char*)msg.c_str(), msg.length(), digest, 0)) {
+		for (int i = 0; i < 64; ++i) {
+			sprintf(&temp[0], "%02x", digest[i]);
+			ret.push_back(temp[0]);
+			ret.push_back(temp[1]);
+		}
+	}
+#endif
+
+#ifdef EQEMU_USE_OPENSSL
+	unsigned char sha_digest[64];
+	char tmp[4];
+
+	SHA512((const unsigned char*)msg.c_str(), msg.length(), sha_digest);
+
+	for (int i = 0; i < 64; ++i) {
+		sprintf(&tmp[0], "%02x", sha_digest[i]);
+		ret.push_back(tmp[0]);
+		ret.push_back(tmp[1]);
+	}
+#endif
+
+	return ret;
+}
+
+#ifdef ENABLE_SECURITY
+
+/**
+ * @param msg
+ * @return
+ */
+std::string eqcrypt_argon2(const std::string &msg)
+{
+	char        buffer[crypto_pwhash_STRBYTES] = {0};
+	std::string ret;
+
+	if (crypto_pwhash_str(
+		&buffer[0],
+		&msg[0],
+		msg.length(),
+		crypto_pwhash_OPSLIMIT_INTERACTIVE,
+		crypto_pwhash_MEMLIMIT_INTERACTIVE
+	) != 0) {
+		return "";
+	}
+
+	ret = buffer;
+	return ret;
+}
+
+/**
+ * @param msg
+ * @return
+ */
+std::string eqcrypt_scrypt(const std::string &msg)
+{
+	char        buffer[crypto_pwhash_scryptsalsa208sha256_STRBYTES] = {0};
+	std::string ret;
+
+	if (crypto_pwhash_scryptsalsa208sha256_str(
+		&buffer[0],
+		&msg[0],
+		msg.length(),
+		crypto_pwhash_scryptsalsa208sha256_OPSLIMIT_INTERACTIVE,
+		crypto_pwhash_scryptsalsa208sha256_MEMLIMIT_INTERACTIVE
+	) != 0) {
+		return "";
+	}
+
+	ret = buffer;
+	return ret;
+}
+
+#endif
+
+/**
+ * @param username
+ * @param password
+ * @param mode
+ * @return
+ */
+std::string eqcrypt_hash(const std::string &username, const std::string &password, int mode)
+{
+	switch (mode) {
+		case EncryptionModeMD5:
+			return eqcrypt_md5(password);
+		case EncryptionModeMD5PassUser:
+			return eqcrypt_md5(password + ":" + username);
+		case EncryptionModeMD5UserPass:
+			return eqcrypt_md5(username + ":" + password);
+		case EncryptionModeMD5Triple:
+			return eqcrypt_md5(eqcrypt_md5(username) + eqcrypt_md5(password));
+		case EncryptionModeSHA:
+			return eqcrypt_sha1(password);
+		case EncryptionModeSHAPassUser:
+			return eqcrypt_sha1(password + ":" + username);
+		case EncryptionModeSHAUserPass:
+			return eqcrypt_sha1(username + ":" + password);
+		case EncryptionModeSHATriple:
+			return eqcrypt_sha1(eqcrypt_sha1(username) + eqcrypt_sha1(password));
+		case EncryptionModeSHA512:
+			return eqcrypt_sha512(password);
+		case EncryptionModeSHA512PassUser:
+			return eqcrypt_sha512(password + ":" + username);
+		case EncryptionModeSHA512UserPass:
+			return eqcrypt_sha512(username + ":" + password);
+		case EncryptionModeSHA512Triple:
+			return eqcrypt_sha512(eqcrypt_sha512(username) + eqcrypt_sha512(password));
+#ifdef ENABLE_SECURITY
+		case EncryptionModeArgon2:
+			return eqcrypt_argon2(password);
+		case EncryptionModeSCrypt:
+			return eqcrypt_scrypt(password);
+#endif
+			//todo bcrypt? pbkdf2?
+		default:
+			return "";
+			break;
 	}
 }
 
+/**
+ * @param username
+ * @param password
+ * @param pwhash
+ * @param mode
+ * @return
+ */
+bool eqcrypt_verify_hash(const std::string &username, const std::string &password, const std::string &pwhash, int mode)
+{
+	switch (mode) {
+#ifdef ENABLE_SECURITY
+		case 13:
+			return crypto_pwhash_str_verify(&pwhash[0], &password[0], password.length()) == 0;
+		case 14:
+			return crypto_pwhash_scryptsalsa208sha256_str_verify(&pwhash[0], &password[0], password.length()) == 0;
+#endif
+		default: {
+			auto hash = eqcrypt_hash(username, password, mode);
+			return hash.compare(pwhash) == 0;
+		}
+	}
+
+	return false;
+}

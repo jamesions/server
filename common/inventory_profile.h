@@ -26,8 +26,11 @@
 
 
 #include "item_instance.h"
+#include "classes.h"
+#include "races.h"
 
 #include <list>
+#include <vector>
 
 
 //FatherNitwit: location bits for searching specific
@@ -52,30 +55,30 @@ public:
 	// Public Methods
 	/////////////////////////
 
-	inline std::list<EQEmu::ItemInstance*>::const_iterator cbegin() { return m_list.cbegin(); }
-	inline std::list<EQEmu::ItemInstance*>::const_iterator cend() { return m_list.cend(); }
+	inline std::list<EQ::ItemInstance*>::const_iterator cbegin() { return m_list.cbegin(); }
+	inline std::list<EQ::ItemInstance*>::const_iterator cend() { return m_list.cend(); }
 
 	inline int size() { return static_cast<int>(m_list.size()); } // TODO: change to size_t
 	inline bool empty() { return m_list.empty(); }
 
-	void push(EQEmu::ItemInstance* inst);
-	void push_front(EQEmu::ItemInstance* inst);
-	EQEmu::ItemInstance* pop();
-	EQEmu::ItemInstance* pop_back();
-	EQEmu::ItemInstance* peek_front() const;
+	void push(EQ::ItemInstance* inst);
+	void push_front(EQ::ItemInstance* inst);
+	EQ::ItemInstance* pop();
+	EQ::ItemInstance* pop_back();
+	EQ::ItemInstance* peek_front() const;
 
 protected:
 	/////////////////////////
 	// Protected Members
 	/////////////////////////
 
-	std::list<EQEmu::ItemInstance*> m_list;
+	std::list<EQ::ItemInstance*> m_list;
 };
 
 // ########################################
-// Class: EQEmu::InventoryProfile
+// Class: EQ::InventoryProfile
 //	Character inventory
-namespace EQEmu
+namespace EQ
 {
 	class InventoryProfile
 	{
@@ -85,21 +88,22 @@ namespace EQEmu
 		// Public Methods
 		///////////////////////////////
 
-		InventoryProfile() { m_mob_version = versions::MobVersion::Unknown; m_mob_version_set = false; }
+		InventoryProfile() {
+			m_mob_version = versions::MobVersion::Unknown;
+			m_gm_inventory = false;
+			m_lookup = inventory::StaticLookup(versions::MobVersion::Unknown);
+		}
 		~InventoryProfile();
 
-		bool SetInventoryVersion(versions::MobVersion inventory_version) {
-			if (!m_mob_version_set) {
-				m_mob_version = versions::ValidateMobVersion(inventory_version);
-				return (m_mob_version_set = true);
-			}
-			else {
-				return false;
-			}
-		}
-		bool SetInventoryVersion(versions::ClientVersion client_version) { return SetInventoryVersion(versions::ConvertClientVersionToMobVersion(client_version)); }
+		void SetInventoryVersion(versions::MobVersion inventory_version);
+		void SetInventoryVersion(versions::ClientVersion client_version) { SetInventoryVersion(versions::ConvertClientVersionToMobVersion(client_version)); }
 
-		versions::MobVersion InventoryVersion() { return m_mob_version; }
+		void SetGMInventory(bool gmi_flag);
+		bool GMInventory() const { return m_gm_inventory; }
+
+		versions::MobVersion InventoryVersion() const { return m_mob_version; }
+
+		const inventory::LookupEntry* GetLookup() const { return m_lookup; }
 
 		static void CleanDirty();
 		static void MarkDirty(ItemInstance *inst);
@@ -127,16 +131,32 @@ namespace EQEmu
 		ItemInstance* GetCursorItem();
 
 		// Swap items in inventory
-		bool SwapItem(int16 slot_a, int16 slot_b);
+		enum SwapItemFailState : int8 { swapInvalid = -1, swapPass = 0, swapNotAllowed, swapNullData, swapRaceClass, swapDeity, swapLevel };
+		bool SwapItem(int16 source_slot, int16 destination_slot, SwapItemFailState& fail_state, uint16 race_id = Race::Doug, uint8 class_id = Class::None, uint32 deity_id = Deity::Unknown, uint8 level = 0);
 
 		// Remove item from inventory
-		bool DeleteItem(int16 slot_id, uint8 quantity = 0);
+		bool DeleteItem(int16 slot_id, int16 quantity = 0);
 
 		// Checks All items in a bag for No Drop
 		bool CheckNoDrop(int16 slot_id, bool recurse = true);
 
 		// Remove item from inventory (and take control of memory)
 		ItemInstance* PopItem(int16 slot_id);
+
+		// Check if player has a specific item equipped by Item ID
+		bool HasItemEquippedByID(uint32 item_id);
+
+		// Check how many of a specific item the player has equipped by Item ID
+		int CountItemEquippedByID(uint32 item_id);
+
+		// Check if player has a specific augment equipped by Item ID
+		bool HasAugmentEquippedByID(uint32 item_id);
+
+		// Check how many of a specific augment the player has equipped by Item ID
+		int CountAugmentEquippedByID(uint32 item_id);
+
+		// Get a list of augments from a specific slot ID
+		std::vector<uint32> GetAugmentIDsBySlotID(int16 slot_id);
 
 		// Check whether there is space for the specified number of the specified item.
 		bool HasSpaceForItem(const ItemData *ItemToTry, int16 Quantity);
@@ -155,7 +175,9 @@ namespace EQEmu
 
 		// Locate an available inventory slot
 		int16 FindFreeSlot(bool for_bag, bool try_cursor, uint8 min_size = 0, bool is_arrow = false);
-		int16 FindFreeSlotForTradeItem(const ItemInstance* inst, int16 general_start = legacy::GENERAL_BEGIN, uint8 bag_start = inventory::containerBegin);
+		int16 FindFreeSlotForTradeItem(const ItemInstance* inst, int16 general_start = invslot::GENERAL_BEGIN, uint8 bag_start = invbag::SLOT_BEGIN);
+		std::vector<int16> FindAllFreeSlotsThatFitItem(const EQ::ItemData *inst);
+		int16 FindFirstFreeSlotThatFitsItem(const EQ::ItemData *inst);
 
 		// Calculate slot_id for an item within a bag
 		static int16 CalcSlotId(int16 slot_id); // Calc parent bag's slot_id
@@ -183,11 +205,12 @@ namespace EQEmu
 		void dumpBankItems();
 		void dumpSharedBankItems();
 
-		void SetCustomItemData(uint32 character_id, int16 slot_id, std::string identifier, std::string value);
-		void SetCustomItemData(uint32 character_id, int16 slot_id, std::string identifier, int value);
-		void SetCustomItemData(uint32 character_id, int16 slot_id, std::string identifier, float value);
-		void SetCustomItemData(uint32 character_id, int16 slot_id, std::string identifier, bool value);
-		std::string GetCustomItemData(int16 slot_id, std::string identifier);
+		void SetCustomItemData(uint32 character_id, int16 slot_id, const std::string &identifier, const std::string& value);
+		void SetCustomItemData(uint32 character_id, int16 slot_id, const std::string &identifier, int value);
+		void SetCustomItemData(uint32 character_id, int16 slot_id, const std::string &identifier, float value);
+		void SetCustomItemData(uint32 character_id, int16 slot_id, const std::string &identifier, bool value);
+		std::string GetCustomItemData(int16 slot_id, const std::string& identifier);
+		static const int GetItemStatValue(uint32 item_id, const std::string& identifier);
 	protected:
 		///////////////////////////////
 		// Protected Methods
@@ -223,7 +246,8 @@ namespace EQEmu
 	private:
 		// Active mob version
 		versions::MobVersion m_mob_version;
-		bool m_mob_version_set;
+		bool m_gm_inventory;
+		const inventory::LookupEntry* m_lookup;
 	};
 }
 

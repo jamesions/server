@@ -24,7 +24,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errmsg.h>
 #include <mysqld_error.h>
 #include <limits.h>
 #include <ctype.h>
@@ -38,148 +37,126 @@
 #define strncasecmp	_strnicmp
 #define strcasecmp	_stricmp
 #else
+
 #include "../common/unix.h"
 #include <netinet/in.h>
+
 #endif
 
 #include "database.h"
 #include "../common/eq_packet_structs.h"
 #include "../common/misc_functions.h"
-#include "../common/string_util.h"
+#include "../common/strings.h"
 #include "chatchannel.h"
+#include "../common/repositories/chatchannel_reserved_names_repository.h"
+#include "../common/repositories/chatchannels_repository.h"
+#include "../common/repositories/name_filter_repository.h"
 
-extern Clientlist *g_Clientlist;
+extern Clientlist      *g_Clientlist;
 extern std::string GetMailPrefix();
 extern ChatChannelList *ChannelList;
-extern uint32 MailMessagesSent;
+extern uint32          MailMessagesSent;
 
-Database::Database ()
+void UCSDatabase::GetAccountStatus(Client *client)
 {
-	DBInitVars();
-}
 
-/*
-Establish a connection to a mysql database with the supplied parameters
-*/
+	std::string query = StringFormat(
+		"SELECT `status`, `hideme`, `karma`, `revoked` FROM `account` WHERE `id` = %i LIMIT 1",
+		client->GetAccountID()
+	);
 
-Database::Database(const char* host, const char* user, const char* passwd, const char* database, uint32 port)
-{
-	DBInitVars();
-	Connect(host, user, passwd, database, port);
-}
+	auto results = QueryDatabase(query);
+	if (!results.Success()) {
+		LogInfo(
+			"Unable to get account status for character [{}], error [{}]",
+			client->GetName().c_str(),
+			results.ErrorMessage().c_str()
+		);
 
-bool Database::Connect(const char* host, const char* user, const char* passwd, const char* database, uint32 port)
-{
-	uint32 errnum= 0;
-	char errbuf[MYSQL_ERRMSG_SIZE];
-	if (!Open(host, user, passwd, database, port, &errnum, errbuf))
-	{
-		Log.Out(Logs::General, Logs::Error, "Failed to connect to database: Error: %s", errbuf);
-		HandleMysqlError(errnum);
-
-		return false;
-	}
-	else
-	{
-		Log.Out(Logs::General, Logs::Status, "Using database '%s' at %s:%d",database,host,port);
-		return true;
-	}
-}
-
-void Database::DBInitVars() {
-
-}
-
-
-
-void Database::HandleMysqlError(uint32 errnum) {
-}
-
-/*
-
-Close the connection to the database
-*/
-Database::~Database()
-{
-}
-
-void Database::GetAccountStatus(Client *client) {
-
-	std::string query = StringFormat("SELECT `status`, `hideme`, `karma`, `revoked` "
-                                    "FROM `account` WHERE `id` = '%i' LIMIT 1",
-                                    client->GetAccountID());
-    auto results = QueryDatabase(query);
-    if (!results.Success()) {
-		Log.Out(Logs::Detail, Logs::UCS_Server, "Unable to get account status for character %s, error %s", client->GetName().c_str(), results.ErrorMessage().c_str());
 		return;
 	}
 
-	Log.Out(Logs::Detail, Logs::UCS_Server, "GetAccountStatus Query: %s", query.c_str());
-
-	if(results.RowCount() != 1)
-	{
-		Log.Out(Logs::Detail, Logs::UCS_Server, "Error in GetAccountStatus");
+	if (results.RowCount() != 1) {
+		LogInfo("Error in GetAccountStatus");
 		return;
 	}
 
 	auto row = results.begin();
 
-	client->SetAccountStatus(atoi(row[0]));
-	client->SetHideMe(atoi(row[1]) != 0);
-	client->SetKarma(atoi(row[2]));
-	client->SetRevoked((atoi(row[3])==1?true:false));
+	client->SetAccountStatus(Strings::ToInt(row[0]));
+	client->SetHideMe(Strings::ToInt(row[1]) != 0);
+	client->SetKarma(Strings::ToInt(row[2]));
+	client->SetRevoked((Strings::ToInt(row[3]) == 1 ? true : false));
 
-	Log.Out(Logs::Detail, Logs::UCS_Server, "Set account status to %i, hideme to %i and karma to %i for %s", client->GetAccountStatus(), client->GetHideMe(), client->GetKarma(), client->GetName().c_str());
-
+	LogDebug(
+		"Set account status to [{}], hideme to [{}] and karma to [{}] for [{}]",
+		client->GetAccountStatus(),
+		client->GetHideMe(),
+		client->GetKarma(),
+		client->GetName().c_str()
+	);
 }
 
-int Database::FindAccount(const char *characterName, Client *client) {
+int UCSDatabase::FindAccount(const char *characterName, Client *client)
+{
 
-	Log.Out(Logs::Detail, Logs::UCS_Server, "FindAccount for character %s", characterName);
-
+	LogInfo("FindAccount for character [{}]", characterName);
 
 	client->ClearCharacters();
-    std::string query = StringFormat("SELECT `id`, `account_id`, `level` "
-                                    "FROM `character_data` WHERE `name` = '%s' LIMIT 1",
-                                    characterName);
-    auto results = QueryDatabase(query);
+	std::string query   = StringFormat(
+		"SELECT `id`, `account_id`, `level` FROM `character_data` WHERE `name` = '%s' LIMIT 1",
+		characterName
+	);
+	auto        results = QueryDatabase(query);
+
 	if (!results.Success()) {
-		Log.Out(Logs::Detail, Logs::UCS_Server, "FindAccount query failed: %s", query.c_str());
 		return -1;
 	}
 
 	if (results.RowCount() != 1) {
-		Log.Out(Logs::Detail, Logs::UCS_Server, "Bad result from query");
 		return -1;
 	}
 
 	auto row = results.begin();
-	client->AddCharacter(atoi(row[0]), characterName, atoi(row[2]));
+	client->AddCharacter(Strings::ToInt(row[0]), characterName, Strings::ToInt(row[2]));
 
-	int accountID = atoi(row[1]);
+	int accountID = Strings::ToInt(row[1]);
 
-	Log.Out(Logs::Detail, Logs::UCS_Server, "Account ID for %s is %i", characterName, accountID);
+	LogInfo("Account ID for [{}] is [{}]", characterName, accountID);
 
-    query = StringFormat("SELECT `id`, `name`, `level` FROM `character_data` "
-                        "WHERE `account_id` = %i AND `name` != '%s'",
-						accountID, characterName);
-    results = QueryDatabase(query);
-	if (!results.Success())
+	query = StringFormat(
+		"SELECT `id`, `name`, `level` FROM `character_data` "
+		"WHERE `account_id` = %i AND `name` != '%s' AND deleted_at is NULL",
+		accountID, characterName
+	);
+
+	results = QueryDatabase(query);
+	if (!results.Success()) {
 		return accountID;
+	}
 
 	for (auto row = results.begin(); row != results.end(); ++row)
-		client->AddCharacter(atoi(row[0]), row[1], atoi(row[2]));
+		client->AddCharacter(Strings::ToInt(row[0]), row[1], Strings::ToInt(row[2]));
 
 	return accountID;
 }
 
-bool Database::VerifyMailKey(std::string characterName, int IPAddress, std::string MailKey) {
+bool UCSDatabase::VerifyMailKey(const std::string& characterName, int IPAddress, const std::string& MailKey)
+{
 
-	std::string query = StringFormat("SELECT `mailkey` FROM `character_data` WHERE `name`='%s' LIMIT 1",
-                                    characterName.c_str());
-    auto results = QueryDatabase(query);
+	std::string query = StringFormat(
+		"SELECT `mailkey` FROM `character_data` WHERE `name`='%s' LIMIT 1",
+		characterName.c_str()
+	);
+
+	auto results = QueryDatabase(query);
 	if (!results.Success()) {
-		Log.Out(Logs::Detail, Logs::UCS_Server, "Error retrieving mailkey from database: %s", results.ErrorMessage().c_str());
+		LogInfo("Error retrieving mailkey from database: [{}]", results.ErrorMessage().c_str());
+		return false;
+	}
+
+	if (results.RowCount() == 0) {
+		LogInfo("No mailkeys found for [{}].", characterName.c_str());
 		return false;
 	}
 
@@ -190,21 +167,26 @@ bool Database::VerifyMailKey(std::string characterName, int IPAddress, std::stri
 	//
 	char combinedKey[17];
 
-	if(RuleB(Chat, EnableMailKeyIPVerification) == true)
+	if (RuleB(Chat, EnableMailKeyIPVerification) == true) {
 		sprintf(combinedKey, "%08X%s", IPAddress, MailKey.c_str());
-	else
+	}
+	else {
 		sprintf(combinedKey, "%s", MailKey.c_str());
+	}
 
-	Log.Out(Logs::Detail, Logs::UCS_Server, "DB key is [%s], Client key is [%s]", (row[0] ? row[0] : ""), combinedKey);
+	LogInfo("DB key is [[{}]], Client key is [[{}]]", (row[0] ? row[0] : ""), combinedKey);
 
 	return !strcmp(row[0], combinedKey);
 }
 
-int Database::FindCharacter(const char *characterName)
+int UCSDatabase::FindCharacter(const char *characterName)
 {
-	char *safeCharName = RemoveApostrophes(characterName);
-	std::string query = StringFormat("SELECT `id` FROM `character_data` WHERE `name`='%s' LIMIT 1", safeCharName);
-	auto results = QueryDatabase(query);
+	char        *safeCharName = RemoveApostrophes(characterName);
+	std::string query         = StringFormat(
+		"SELECT `id` FROM `character_data` WHERE `name`='%s' LIMIT 1",
+		safeCharName
+	);
+	auto        results       = QueryDatabase(query);
 	if (!results.Success()) {
 		safe_delete_array(safeCharName);
 		return -1;
@@ -213,28 +195,29 @@ int Database::FindCharacter(const char *characterName)
 	safe_delete_array(safeCharName);
 
 	if (results.RowCount() != 1) {
-		Log.Out(Logs::Detail, Logs::UCS_Server, "Bad result from FindCharacter query for character %s",
-			characterName);
+		LogInfo("Bad result from FindCharacter query for character [{}]", characterName);
 		return -1;
 	}
 
 	auto row = results.begin();
 
-	int characterID = atoi(row[0]);
+	int characterID = Strings::ToInt(row[0]);
 
 	return characterID;
 }
 
-bool Database::GetVariable(const char* varname, char* varvalue, uint16 varvalue_len) {
+bool UCSDatabase::GetVariable(const char *varname, char *varvalue, uint16 varvalue_len)
+{
 
-	std::string query = StringFormat("SELECT `value` FROM `variables` WHERE `varname` = '%s'", varname);
-    auto results = QueryDatabase(query);
+	std::string query   = StringFormat("SELECT `value` FROM `variables` WHERE `varname` = '%s'", varname);
+	auto        results = QueryDatabase(query);
 	if (!results.Success()) {
 		return false;
 	}
 
-	if (results.RowCount() != 1)
+	if (results.RowCount() != 1) {
 		return false;
+	}
 
 	auto row = results.begin();
 
@@ -243,61 +226,187 @@ bool Database::GetVariable(const char* varname, char* varvalue, uint16 varvalue_
 	return true;
 }
 
-bool Database::LoadChatChannels() {
 
-	Log.Out(Logs::Detail, Logs::UCS_Server, "Loading chat channels from the database.");
+bool UCSDatabase::LoadChatChannels()
+{
+	if (!RuleB(Chat, ChannelsIgnoreNameFilter)) {
+		LoadFilteredNamesFromDB();
+	}
+	LoadReservedNamesFromDB();
+	LogInfo("Loading chat channels from the database");
 
-	const std::string query = "SELECT `name`, `owner`, `password`, `minstatus` FROM `chatchannels`";
-    auto results = QueryDatabase(query);
+	const std::string query   = "SELECT `name`, `owner`, `password`, `minstatus` FROM `chatchannels`";
+	auto results = QueryDatabase(query);
 	if (!results.Success()) {
 		return false;
 	}
 
-	for (auto row = results.begin();row != results.end(); ++row) {
-		std::string channelName = row[0];
-		std::string channelOwner = row[1];
-		std::string channelPassword = row[2];
+	for (auto row = results.begin(); row != results.end(); ++row) {
+		std::string channel_name = row[0];
+		std::string channel_owner = row[1];
+		std::string channel_password = row[2];
+		auto channel_min_status = row[3];
 
-		ChannelList->CreateChannel(channelName, channelOwner, channelPassword, true, atoi(row[3]));
+		if (!ChannelList->FindChannel(channel_name)) {
+			ChannelList->CreateChannel(channel_name, channel_owner, channel_password, true, Strings::ToInt(channel_min_status), false);
+		}
 	}
+	return true;
+}
+
+void UCSDatabase::LoadReservedNamesFromDB()
+{
+	ChatChannelList::ClearChannelBlockList();
+
+	auto channels = ChatchannelReservedNamesRepository::All(*this);
+	if (channels.empty()) {
+		LogDebug("No reserved names exist in the database...");
+	}
+
+	for (auto &e: channels) {
+		ChatChannelList::AddToChannelBlockList(e.name);
+		LogInfo("Adding channel [{}] to blocked list from database...", e.name);
+	}
+
+	LogInfo("Loaded [{}] reserved channel name(s)", channels.size());
+}
+
+void UCSDatabase::LoadFilteredNamesFromDB()
+{
+	ChatChannelList::ClearFilteredNameList();
+
+	auto names = NameFilterRepository::All(*this);
+	if (names.empty()) {
+		LogDebug("No filtered names exist in the database...");
+	}
+
+	for (const auto& e : names) {
+		ChatChannelList::AddToFilteredNames(e.name);
+	}
+
+	LogInfo("Loaded [{}] filtered channel name(s)", names.size());
+}
+
+void UCSDatabase::SaveChatChannel(
+	const std::string& channel_name,
+	const std::string& channel_owner,
+	const std::string& channel_password,
+	const uint16& min_status
+)
+{
+	auto e = ChatchannelsRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`name` = '{}' LIMIT 1", Strings::Escape(channel_name)
+		)
+	);
+
+	// If channel name is blocked, do not save it to the database
+	if (ChatChannelList::IsOnChannelBlockList(channel_name)) {
+		LogInfo("Channel [{}] already found on the block list, ignoring", channel_name);
+		return;
+	}
+
+	// update if exists, create new if it doesn't
+	auto c = !e.empty() ? e[0] : ChatchannelsRepository::NewEntity();
+	c.name      = channel_name;
+	c.owner     = channel_owner;
+	c.password  = channel_password;
+	c.minstatus = min_status;
+
+	if (e.empty()) {
+		ChatchannelsRepository::InsertOne(*this, c);
+		return;
+	}
+
+	ChatchannelsRepository::UpdateOne(*this, c);
+}
+
+void UCSDatabase::DeleteChatChannel(const std::string& channel_name)
+{
+	ChatchannelsRepository::DeleteWhere(*this, fmt::format("`name` = '{}'", Strings::Escape(channel_name)));
+	LogInfo("Deleting channel [{}] from the database.", channel_name);
+}
+
+std::vector<std::string> UCSDatabase::CurrentPlayerChannels(const std::string& player_name) {
+	auto rows = ChatchannelsRepository::GetWhere(*this,	fmt::format("`owner` = '{}'", Strings::Escape(player_name)));
+	if (rows.empty()) {
+		return {};
+	}
+	std::vector<std::string> channels = {};
+	channels.reserve(rows.size());
+	for (auto &e: rows) {
+		channels.emplace_back(e.name);
+	}
+	LogDebug("Player [{}] has the following [{}] permanent channels saved to the database: [{}].", player_name, rows.size(), Strings::Join(channels, ", "));
+	return channels;
+}
+
+int UCSDatabase::CurrentPlayerChannelCount(const std::string& player_name)
+{
+	return (int) ChatchannelsRepository::Count(*this, fmt::format("`owner` = '{}'", Strings::Escape(player_name)));
+}
+
+void UCSDatabase::SetChannelPassword(const std::string& channel_name, const std::string& password)
+{
+	LogInfo("UCSDatabase::SetChannelPassword([{}], [{}])", channel_name.c_str(), password.c_str());
+
+	std::string query = fmt::format(
+		"UPDATE `chatchannels` SET `password` = '{}' WHERE `name` = '{}'",
+		Strings::Escape(password), Strings::Escape(channel_name));
+	QueryDatabase(query);
+}
+
+void UCSDatabase::SetChannelOwner(const std::string& channel_name, const std::string& owner)
+{
+	LogInfo("Setting channel [{}] owner to [{}]", channel_name, owner);
+
+	std::string query = fmt::format(
+		"UPDATE `chatchannels` SET `owner` = '{}' WHERE `name` = '{}'",
+		Strings::Escape(owner),
+		Strings::Escape(channel_name)
+	);
+
+	QueryDatabase(query);
+}
+
+bool UCSDatabase::CheckChannelNameFilter(const std::string& channel_name)
+{
+	LogDebug("Checking if [{}] is on the name filter", channel_name);
+
+	for (const auto &e: ChatChannelList::GetFilteredNames()) {
+		if (Strings::Contains(Strings::ToLower(channel_name), Strings::ToLower(e))) {
+			LogInfo("Failed to pass name filter check for [{}] against word [{}]", channel_name, e);
+			return false;
+		}
+	}
+
+	LogDebug("Name Filter Check Passed!");
 
 	return true;
 }
 
-void Database::SetChannelPassword(std::string channelName, std::string password) {
-
-	Log.Out(Logs::Detail, Logs::UCS_Server, "Database::SetChannelPassword(%s, %s)", channelName.c_str(), password.c_str());
-
-	std::string query = StringFormat("UPDATE `chatchannels` SET `password` = '%s' WHERE `name` = '%s'",
-                                    password.c_str(), channelName.c_str());
-    QueryDatabase(query);
-}
-
-void Database::SetChannelOwner(std::string channelName, std::string owner) {
-
-	Log.Out(Logs::Detail, Logs::UCS_Server, "Database::SetChannelOwner(%s, %s)", channelName.c_str(), owner.c_str());
-
-	std::string query = StringFormat("UPDATE `chatchannels` SET `owner` = '%s' WHERE `name` = '%s'",
-                                    owner.c_str(), channelName.c_str());
-    QueryDatabase(query);
-}
-
-void Database::SendHeaders(Client *client) {
+void UCSDatabase::SendHeaders(Client *client)
+{
 
 	int unknownField2 = 25015275;
 	int unknownField3 = 1;
-	int characterID = FindCharacter(client->MailBoxName().c_str());
+	int characterID   = FindCharacter(client->MailBoxName().c_str());
 
-	Log.Out(Logs::Detail, Logs::UCS_Server, "Sendheaders for %s, CharID is %i", client->MailBoxName().c_str(), characterID);
+	LogDebug("Sendheaders for [{}], CharID is [{}]", client->MailBoxName().c_str(), characterID);
 
-	if(characterID <= 0)
+	if (characterID <= 0) {
 		return;
+	}
 
-	std::string query = StringFormat("SELECT `msgid`,`timestamp`, `from`, `subject`, `status` "
-                                    "FROM `mail` WHERE `charid`=%i", characterID);
-    auto results = QueryDatabase(query);
-	if (!results.Success())
+	std::string query   = StringFormat(
+		"SELECT `msgid`,`timestamp`, `from`, `subject`, `status` "
+		"FROM `mail` WHERE `charid`=%i", characterID
+	);
+	auto        results = QueryDatabase(query);
+	if (!results.Success()) {
 		return;
+	}
 
 	char buffer[100];
 
@@ -317,7 +426,7 @@ void Database::SendHeaders(Client *client) {
 
 	auto outapp = new EQApplicationPacket(OP_MailHeaderCount, headerCountPacketLength);
 
-	char *packetBuffer = (char *)outapp->pBuffer;
+	char *packetBuffer = (char *) outapp->pBuffer;
 
 	VARSTRUCT_ENCODE_INTSTRING(packetBuffer, client->GetMailBoxNumber());
 	VARSTRUCT_ENCODE_INTSTRING(packetBuffer, unknownField2);
@@ -329,8 +438,8 @@ void Database::SendHeaders(Client *client) {
 
 	safe_delete(outapp);
 
-	int rowIndex = 0;
-	for(auto row = results.begin(); row != results.end(); ++row, ++rowIndex) {
+	int       rowIndex = 0;
+	for (auto row      = results.begin(); row != results.end(); ++row, ++rowIndex) {
 		int headerPacketLength = 0;
 
 		sprintf(buffer, "%i", client->GetMailBoxNumber());
@@ -348,7 +457,7 @@ void Database::SendHeaders(Client *client) {
 
 		outapp = new EQApplicationPacket(OP_MailHeader, headerPacketLength);
 
-		packetBuffer = (char *)outapp->pBuffer;
+		packetBuffer = (char *) outapp->pBuffer;
 
 		VARSTRUCT_ENCODE_INTSTRING(packetBuffer, client->GetMailBoxNumber());
 		VARSTRUCT_ENCODE_INTSTRING(packetBuffer, unknownField2);
@@ -369,39 +478,48 @@ void Database::SendHeaders(Client *client) {
 
 }
 
-void Database::SendBody(Client *client, int messageNumber) {
+void UCSDatabase::SendBody(Client *client, const int& messageNumber)
+{
 
 	int characterID = FindCharacter(client->MailBoxName().c_str());
 
-	Log.Out(Logs::Detail, Logs::UCS_Server, "SendBody: MsgID %i, to %s, CharID is %i", messageNumber, client->MailBoxName().c_str(), characterID);
+	LogInfo("SendBody: MsgID [{}], to [{}], CharID is [{}]", messageNumber, client->MailBoxName().c_str(), characterID);
 
-	if(characterID <= 0)
+	if (characterID <= 0) {
 		return;
+	}
 
-	std::string query = StringFormat("SELECT `msgid`, `body`, `to` FROM `mail` "
-                                    "WHERE `charid`=%i AND `msgid`=%i", characterID, messageNumber);
-    auto results = QueryDatabase(query);
-	if (!results.Success())
+	std::string query = StringFormat(
+		"SELECT `msgid`, `body`, `to` FROM `mail` "
+		"WHERE `charid`=%i AND `msgid`=%i",
+		characterID,
+		messageNumber
+	);
+
+	auto results = QueryDatabase(query);
+	if (!results.Success()) {
 		return;
+	}
 
 
-	if (results.RowCount() != 1)
+	if (results.RowCount() != 1) {
 		return;
+	}
 
 	auto row = results.begin();
 
-	Log.Out(Logs::Detail, Logs::UCS_Server, "Message: %i  body (%i bytes)", messageNumber, strlen(row[1]));
+	LogInfo("Message: [{}]  body ([{}] bytes)", messageNumber, strlen(row[1]));
 
 	int packetLength = 12 + strlen(row[0]) + strlen(row[1]) + strlen(row[2]);
 
 	auto outapp = new EQApplicationPacket(OP_MailSendBody, packetLength);
 
-	char *packetBuffer = (char *)outapp->pBuffer;
+	char *packetBuffer = (char *) outapp->pBuffer;
 
 	VARSTRUCT_ENCODE_INTSTRING(packetBuffer, client->GetMailBoxNumber());
-	VARSTRUCT_ENCODE_STRING(packetBuffer,row[0]);
-	VARSTRUCT_ENCODE_STRING(packetBuffer,row[1]);
-	VARSTRUCT_ENCODE_STRING(packetBuffer,"1");
+	VARSTRUCT_ENCODE_STRING(packetBuffer, row[0]);
+	VARSTRUCT_ENCODE_STRING(packetBuffer, row[1]);
+	VARSTRUCT_ENCODE_STRING(packetBuffer, "1");
 	VARSTRUCT_ENCODE_TYPE(uint8, packetBuffer, 0);
 	VARSTRUCT_ENCODE_TYPE(uint8, packetBuffer, 0x0a);
 	VARSTRUCT_ENCODE_STRING(packetBuffer, "TO:");
@@ -410,62 +528,75 @@ void Database::SendBody(Client *client, int messageNumber) {
 	packetBuffer--; // Overwrite the null terminator
 	VARSTRUCT_ENCODE_TYPE(uint8, packetBuffer, 0x0a);
 
-
 	client->QueuePacket(outapp);
 
 	safe_delete(outapp);
 }
 
-bool Database::SendMail(std::string recipient, std::string from, std::string subject, std::string body, std::string recipientsString) {
+bool UCSDatabase::SendMail(
+	const std::string& recipient,
+	const std::string& from,
+	const std::string& subject,
+	const std::string& body,
+	const std::string& recipientsString
+)
+{
 
-	int characterID;
+	int         characterID;
 	std::string characterName;
 
 	auto lastPeriod = recipient.find_last_of(".");
 
-	if(lastPeriod == std::string::npos)
+	if (lastPeriod == std::string::npos) {
 		characterName = recipient;
-	else
-		characterName = recipient.substr(lastPeriod+1);
+	}
+	else {
+		characterName = recipient.substr(lastPeriod + 1);
+	}
 
 	characterName[0] = toupper(characterName[0]);
 
-	for(unsigned int i = 1; i < characterName.length(); i++)
+	for (unsigned int i = 1; i < characterName.length(); i++)
 		characterName[i] = tolower(characterName[i]);
 
 	characterID = FindCharacter(characterName.c_str());
 
-	Log.Out(Logs::Detail, Logs::UCS_Server, "SendMail: CharacterID for recipient %s is %i", characterName.c_str(), characterID);
+	LogInfo("SendMail: CharacterID for recipient [{}] is [{}]", characterName.c_str(), characterID);
 
-	if(characterID <= 0)
-        return false;
+	if (characterID <= 0) {
+		return false;
+	}
 
 	auto escSubject = new char[subject.length() * 2 + 1];
-	auto escBody = new char[body.length() * 2 + 1];
+	auto escBody    = new char[body.length() * 2 + 1];
 
 	DoEscapeString(escSubject, subject.c_str(), subject.length());
 	DoEscapeString(escBody, body.c_str(), body.length());
 
 	int now = time(nullptr); // time returns a 64 bit int on Windows at least, which vsnprintf doesn't like.
 
-    std::string query = StringFormat("INSERT INTO `mail` "
-                                    "(`charid`, `timestamp`, `from`, `subject`, `body`, `to`, `status`) "
-                                    "VALUES ('%i', %i, '%s', '%s', '%s', '%s', %i)",
-                                    characterID, now, from.c_str(), escSubject, escBody,
-                                    recipientsString.c_str(), 1);
-    safe_delete_array(escSubject);
-    safe_delete_array(escBody);
-    auto results = QueryDatabase(query);
-	if(!results.Success()) {
+	std::string query = StringFormat(
+		"INSERT INTO `mail` (`charid`, `timestamp`, `from`, `subject`, `body`, `to`, `status`) VALUES ('%i', %i, '%s', '%s', '%s', '%s', %i)",
+		characterID,
+		now,
+		from.c_str(),
+		escSubject,
+		escBody,
+		recipientsString.c_str(),
+		1
+	);
+	safe_delete_array(escSubject);
+	safe_delete_array(escBody);
+	auto results = QueryDatabase(query);
+	if (!results.Success()) {
 		return false;
 	}
 
-	Log.Out(Logs::Detail, Logs::UCS_Server, "MessageID %i generated, from %s, to %s", results.LastInsertedID(), from.c_str(), recipient.c_str());
-
+	LogInfo("MessageID [{}] generated, from [{}], to [{}]", results.LastInsertedID(), from.c_str(), recipient.c_str());
 
 	Client *client = g_Clientlist->IsCharacterOnline(characterName);
 
-	if(client) {
+	if (client) {
 		std::string FQN = GetMailPrefix() + from;
 		client->SendNotification(client->GetMailBoxNumber(characterName), subject, FQN, results.LastInsertedID());
 	}
@@ -475,90 +606,127 @@ bool Database::SendMail(std::string recipient, std::string from, std::string sub
 	return true;
 }
 
-void Database::SetMessageStatus(int messageNumber, int status) {
+void UCSDatabase::SetMessageStatus(const int& messageNumber, const int& status)
+{
 
-	Log.Out(Logs::Detail, Logs::UCS_Server, "SetMessageStatus %i %i", messageNumber, status);
+	LogInfo("SetMessageStatus [{}] [{}]", messageNumber, status);
 
-	if(status == 0) {
-        std::string query = StringFormat("DELETE FROM `mail` WHERE `msgid` = %i", messageNumber);
-		auto results = QueryDatabase(query);
-        return;
-    }
+	if (status == 0) {
+		std::string query   = StringFormat("DELETE FROM `mail` WHERE `msgid` = %i", messageNumber);
+		auto        results = QueryDatabase(query);
+		return;
+	}
 
-    std::string query = StringFormat("UPDATE `mail` SET `status` = %i WHERE `msgid`=%i", status, messageNumber);
-    QueryDatabase(query);
+	std::string query = StringFormat("UPDATE `mail` SET `status` = %i WHERE `msgid`=%i", status, messageNumber);
+	QueryDatabase(query);
 }
 
-void Database::ExpireMail() {
+void UCSDatabase::ExpireMail()
+{
 
-	Log.Out(Logs::Detail, Logs::UCS_Server, "Expiring mail...");
+	LogInfo("Expiring mail");
 
-	std::string query = "SELECT COUNT(*) FROM `mail`";
-    auto results = QueryDatabase(query);
-    if (!results.Success()) {
+	std::string query   = "SELECT COUNT(*) FROM `mail`";
+	auto        results = QueryDatabase(query);
+	if (!results.Success()) {
 		return;
 	}
 
 	auto row = results.begin();
 
-	Log.Out(Logs::Detail, Logs::UCS_Server, "There are %s messages in the database.", row[0]);
+	LogInfo("There are [{}] messages in the database", row[0]);
 
-	// Expire Trash
-	if(RuleI(Mail, ExpireTrash) >= 0) {
-        query = StringFormat("DELETE FROM `mail` WHERE `status`=4 AND `timestamp` < %i",
-                            time(nullptr) - RuleI(Mail, ExpireTrash));
-        results = QueryDatabase(query);
-		if(results.Success())
-            Log.Out(Logs::Detail, Logs::UCS_Server, "Expired %i trash messages.", results.RowsAffected());
+	/**
+	 * Expire trash
+	 */
+	if (RuleI(Mail, ExpireTrash) >= 0) {
+		query   = StringFormat(
+			"DELETE FROM `mail` WHERE `status`=4 AND `timestamp` < %i",
+			time(nullptr) - RuleI(Mail, ExpireTrash));
+		results = QueryDatabase(query);
+		if (results.Success()) {
+			LogInfo("Expired [{}] trash messages", results.RowsAffected());
+		}
 	}
 
-	// Expire Read
-	if(RuleI(Mail, ExpireRead) >= 0) {
-        query = StringFormat("DELETE FROM `mail` WHERE `status` = 3 AND `timestamp` < %i",
-                            time(nullptr) - RuleI(Mail, ExpireRead));
-        results = QueryDatabase(query);
-		if(results.Success())
-            Log.Out(Logs::Detail, Logs::UCS_Server, "Expired %i read messages.", results.RowsAffected());
+	/**
+	 * Expire read
+	 */
+	if (RuleI(Mail, ExpireRead) >= 0) {
+		query = StringFormat(
+			"DELETE FROM `mail` WHERE `status` = 3 AND `timestamp` < %i",
+			time(nullptr) - RuleI(Mail, ExpireRead)
+		);
+
+		results = QueryDatabase(query);
+		if (results.Success())
+			LogInfo("Expired [{}] read messages", results.RowsAffected());
 	}
 
-	// Expire Unread
-	if(RuleI(Mail, ExpireUnread) >= 0) {
-        query = StringFormat("DELETE FROM `mail` WHERE `status`=1 AND `timestamp` < %i",
-                            time(nullptr) - RuleI(Mail, ExpireUnread));
-        results = QueryDatabase(query);
-		if(results.Success())
-            Log.Out(Logs::Detail, Logs::UCS_Server, "Expired %i unread messages.", results.RowsAffected());
+	/**
+	 * Expire unread
+	 */
+	if (RuleI(Mail, ExpireUnread) >= 0) {
+		query = StringFormat(
+			"DELETE FROM `mail` WHERE `status`=1 AND `timestamp` < %i",
+			time(nullptr) - RuleI(Mail, ExpireUnread)
+		);
+
+		results = QueryDatabase(query);
+		if (results.Success()) {
+			LogInfo("Expired [{}] unread messages", results.RowsAffected());
+		}
 	}
 }
 
-void Database::AddFriendOrIgnore(int charID, int type, std::string name) {
+void UCSDatabase::AddFriendOrIgnore(const int& charID, const int& type, const std::string& name)
+{
+	std::string query = StringFormat(
+		"INSERT INTO `friends` (`charid`, `type`, `name`) "
+		"VALUES('%i', %i, '%s')",
+		charID,
+		type,
+		CapitaliseName(name).c_str()
+	);
 
-    std::string query = StringFormat("INSERT INTO `friends` (`charid`, `type`, `name`) "
-                                    "VALUES('%i', %i, '%s')",
-                                    charID, type, CapitaliseName(name).c_str());
-    auto results = QueryDatabase(query);
-	if(results.Success())
-		Log.Out(Logs::Detail, Logs::UCS_Server, "Wrote Friend/Ignore entry for charid %i, type %i, name %s to database.", charID, type, name.c_str());
+	auto results = QueryDatabase(query);
 
+	if (results.Success()) {
+		LogInfo(
+			"Wrote Friend/Ignore entry for charid [{}], type [{}], name [{}] to database",
+			charID,
+			type,
+			name.c_str()
+		);
+	}
 }
 
-void Database::RemoveFriendOrIgnore(int charID, int type, std::string name) {
+void UCSDatabase::RemoveFriendOrIgnore(const int& charID, const int& type, const std::string& name)
+{
+	std::string query = StringFormat(
+		"DELETE FROM `friends` WHERE `charid` = %i AND `type` = %i AND `name` = '%s'",
+		charID,
+		type,
+		CapitaliseName(name).c_str()
+	);
 
-	std::string query = StringFormat("DELETE FROM `friends` WHERE `charid` = %i "
-                                    "AND `type` = %i AND `name` = '%s'",
-                                    charID, type, CapitaliseName(name).c_str());
-    auto results = QueryDatabase(query);
-	if(!results.Success())
-		Log.Out(Logs::Detail, Logs::UCS_Server, "Error removing friend/ignore, query was %s", query.c_str());
-	else
-		Log.Out(Logs::Detail, Logs::UCS_Server, "Removed Friend/Ignore entry for charid %i, type %i, name %s from database.", charID, type, name.c_str());
+	auto results = QueryDatabase(query);
 
+	if (results.Success()) {
+		LogInfo(
+			"Removed Friend/Ignore entry for charid [{}], type [{}], name [{}] from database",
+			charID,
+			type,
+			name.c_str()
+		);
+	}
 }
 
-void Database::GetFriendsAndIgnore(int charID, std::vector<std::string> &friends, std::vector<std::string> &ignorees) {
+void UCSDatabase::GetFriendsAndIgnore(const int& charID, std::vector<std::string> &friends, std::vector<std::string> &ignorees)
+{
 
-	std::string query = StringFormat("select `type`, `name` FROM `friends` WHERE `charid`=%i", charID);
-    auto results = QueryDatabase(query);
+	std::string query   = StringFormat("select `type`, `name` FROM `friends` WHERE `charid`=%i", charID);
+	auto        results = QueryDatabase(query);
 	if (!results.Success()) {
 		return;
 	}
@@ -567,57 +735,14 @@ void Database::GetFriendsAndIgnore(int charID, std::vector<std::string> &friends
 	for (auto row = results.begin(); row != results.end(); ++row) {
 		std::string name = row[1];
 
-		if(atoi(row[0]) == 0)
-		{
+		if (Strings::ToInt(row[0]) == 0) {
 			ignorees.push_back(name);
-			Log.Out(Logs::Detail, Logs::UCS_Server, "Added Ignoree from DB %s", name.c_str());
+			LogInfo("Added Ignoree from DB [{}]", name.c_str());
 			continue;
 		}
 
-        friends.push_back(name);
-        Log.Out(Logs::Detail, Logs::UCS_Server, "Added Friend from DB %s", name.c_str());
+		friends.push_back(name);
+		LogInfo("Added Friend from DB [{}]", name.c_str());
 	}
 
-}
-
-void Database::LoadLogSettings(EQEmuLogSys::LogSettings* log_settings){
-	std::string query =
-		"SELECT "
-		"log_category_id, "
-		"log_category_description, "
-		"log_to_console, "
-		"log_to_file, "
-		"log_to_gmsay "
-		"FROM "
-		"logsys_categories "
-		"ORDER BY log_category_id";
-	auto results = QueryDatabase(query);
-
-	int log_category = 0;
-	Log.file_logs_enabled = false;
-
-	for (auto row = results.begin(); row != results.end(); ++row) {
-		log_category = atoi(row[0]);
-		log_settings[log_category].log_to_console = atoi(row[2]);
-		log_settings[log_category].log_to_file = atoi(row[3]);
-		log_settings[log_category].log_to_gmsay = atoi(row[4]);
-
-		/* Determine if any output method is enabled for the category
-			and set it to 1 so it can used to check if category is enabled */
-		const bool log_to_console = log_settings[log_category].log_to_console > 0;
-		const bool log_to_file = log_settings[log_category].log_to_file > 0;
-		const bool log_to_gmsay = log_settings[log_category].log_to_gmsay > 0;
-		const bool is_category_enabled = log_to_console || log_to_file || log_to_gmsay;
-
-		if (is_category_enabled)
-			log_settings[log_category].is_category_enabled = 1;
-
-		/*
-		This determines whether or not the process needs to actually file log anything.
-		If we go through this whole loop and nothing is set to any debug level, there is no point to create a file or keep anything open
-		*/
-		if (log_settings[log_category].log_to_file > 0){
-			Log.file_logs_enabled = true;
-		}
-	}
 }

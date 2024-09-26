@@ -22,7 +22,8 @@
 #include <map>
 #include <vector>
 
-enum {	//values for pTimerType
+enum : int {	//values for pTimerType
+	pTimerNegativeItemReuse = -1, // these grow down basically, we will have item ID * -1 for the timer ID
 	pTimerStartAdventureTimer = 1,
 	pTimerSurnameChange = 2,
 	pTimerFeignDeath = 3,
@@ -43,6 +44,9 @@ enum {	//values for pTimerType
 	pTimerBeggingPickPocket = 27,
 	pTimerLinkedSpellReuseStart = 28,
 	pTimerLinkedSpellReuseEnd = 48,
+	pTimerClearXTarget = 50,
+
+	pTimerShieldAbility = 86,
 
 	pTimerLayHands = 87,		//these IDs are used by client too
 	pTimerHarmTouch = 89,		//so dont change them

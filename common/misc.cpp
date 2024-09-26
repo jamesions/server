@@ -18,9 +18,7 @@
 #include "misc.h"
 #include "types.h"
 #include <cstring>
-
-#define ENC(c) (((c) & 0x3f) + ' ')
-#define DEC(c)	(((c) - ' ') & 0x3f)
+#include "strings.h"
 
 std::map<int,std::string> DBFieldNames;
 
@@ -153,7 +151,7 @@ static char *temp=nullptr;
 		return false;
 	}
 	ptr++;
-	uint32 id = atoi(field[id_pos].c_str());
+	uint32 id = Strings::ToUnsignedInt(field[id_pos]);
 	items[id]=field;
 
 	for(i=0;i<10;i++) {
@@ -214,181 +212,6 @@ std::string x;
 		len=0;
 	}
 	return i;
-}
-
-void LoadItemDBFieldNames() {
-	DBFieldNames[0]="N/A";			// Charges
-	DBFieldNames[1]="unknown002";		// ?
-	DBFieldNames[2]="N/A";			// Current Equip Slot
-	DBFieldNames[3]="unknown004";
-	DBFieldNames[4]="unknown005";		// ?
-	DBFieldNames[5]="itemclass";		// "Item Type (0=common, 1=container, 2=book)"
-	DBFieldNames[6]="name";			// Name
-	DBFieldNames[7]="lore";			// "Lore Name (*=lore, &=summoned, #=artifact)"
-	DBFieldNames[8]="idfile";		// IDFile
-	DBFieldNames[9]="id";			// ItemNumber
-	DBFieldNames[10]="weight";		// Weight
-	DBFieldNames[11]="norent";		// "NoRent (0=norent, 255=not norent)"
-	DBFieldNames[12]="nodrop";		// "NoDrop (0=nodrop, 255=not nodrop)"
-	DBFieldNames[13]="size";		// "Size (0=tiny, 1=small, 2=medium, 3=large, 4=giant)"
-	DBFieldNames[14]="slots";		// EquipSlots
-	DBFieldNames[15]="cost";		// Cost
-	DBFieldNames[16]="icon";		// IconNumber
-	DBFieldNames[17]="unknown018";
-	DBFieldNames[18]="unknown019";
-	DBFieldNames[19]="unknown020";		// ?
-	DBFieldNames[20]="tradeskills";		// "Tradeskill Item (1=is a tradeskill item, 0=not)"
-	DBFieldNames[21]="cr";			// SvCold
-	DBFieldNames[22]="dr";			// SvDisease
-	DBFieldNames[23]="pr";			// SvPoison
-	DBFieldNames[24]="mr";			// SvMagic
-	DBFieldNames[25]="fr";			// SvFire
-	DBFieldNames[26]="astr";		// STR
-	DBFieldNames[27]="asta";		// STA
-	DBFieldNames[28]="aagi";		// AGI
-	DBFieldNames[29]="adex";		// DEX
-	DBFieldNames[30]="acha";		// CHA
-	DBFieldNames[31]="aint";		// INT
-	DBFieldNames[32]="awis";		// WIS
-	DBFieldNames[33]="hp";			// HP
-	DBFieldNames[34]="mana";		// Mana
-	DBFieldNames[35]="ac";			// AC
-	DBFieldNames[36]="deity";		// Deity
-	DBFieldNames[37]="skillmodvalue";	// Skill Mod Value
-	DBFieldNames[38]="skillmodtype";	// Skill Mod Type
-	DBFieldNames[39]="banedmgrace";		// Bane Dmg Race
-	DBFieldNames[40]="banedmgamt";		// Band Dmg
-	DBFieldNames[41]="banedmgbody";		// Band Dmg Body
-	DBFieldNames[42]="magic";		// "Magic (0=not magic, 1=magic)"
-	DBFieldNames[43]="casttime2";		// Casttime appears twice
-	DBFieldNames[44]="hasteproclvl";	// "Level (Haste value, rather)"
-	DBFieldNames[45]="reqlevel";		// Required Level
-	DBFieldNames[46]="bardtype";		// Bard Type
-	DBFieldNames[47]="bardvalue";		// Bard Type Amount
-	DBFieldNames[48]="light";		// Light
-	DBFieldNames[49]="delay";		// Attack Delay
-	DBFieldNames[50]="reclevel";		// Recommended Level
-	DBFieldNames[51]="recskill";		// Recommended Skill
-	DBFieldNames[52]="elemdmgamt";		// "Elemental Dmg Type (1=magic, 2=fire, 3=cold, 4=poison, 5=disease)"
-	DBFieldNames[53]="elemdmgtype";		// Elemental Dmg
-	DBFieldNames[54]="effecttype";		// "Effect Type (0=combat, 1=clicky, 2=Worn, 3=Expendable charges, 4=Must Equip Clicky, 5=clicky)"
-	DBFieldNames[55]="range";		// Range
-	DBFieldNames[56]="damage";		// Damage
-	DBFieldNames[57]="color";		// Color
-	DBFieldNames[58]="classes";		// Classes
-	DBFieldNames[59]="races";		// Races
-	DBFieldNames[60]="unknown061";
-	DBFieldNames[61]="spellid";		// SpellId
-	DBFieldNames[62]="maxcharges";		// MaxCharges
-	DBFieldNames[63]="itemtype";		// "Skill (ItemType: 1hs, etc)"
-	DBFieldNames[64]="material";		// Material
-	DBFieldNames[65]="sellrate";		// ** Sell Rate
-	DBFieldNames[66]="unknown067";
-	DBFieldNames[67]="casttime";		// CastTime (milliseconds)
-	DBFieldNames[68]="unknown069";
-	DBFieldNames[69]="unknown070";		// ?
-	DBFieldNames[70]="focusid";		// Focus Effect Spell Id
-	DBFieldNames[71]="combateffects";	// CombatEffects
-	DBFieldNames[72]="shielding";		// Shielding
-	DBFieldNames[73]="stunresist";		// StunResist
-	DBFieldNames[74]="strikethrough";	// StrikeThrough
-	DBFieldNames[75]="unknown076";
-	DBFieldNames[76]="unknown077";		// ?
-	DBFieldNames[77]="spellshield";		// Spell Shield
-	DBFieldNames[78]="avoidance";		// Avoidance
-	DBFieldNames[79]="accuracy";		// Accuracy
-	DBFieldNames[80]="factionmod1";		// Faction Mod Index 1
-	DBFieldNames[81]="factionmod2";		// Faction Mod Index 2
-	DBFieldNames[82]="factionmod3";		// Faction Mod Index 3
-	DBFieldNames[83]="factionmod4";		// Faction Mod Index 4
-	DBFieldNames[84]="factionamt1";		// Faction Mod Value 1
-	DBFieldNames[85]="factionamt2";		// Faction Mod Value 2
-	DBFieldNames[86]="factionamt3";		// Faction Mod Value 3
-	DBFieldNames[87]="factionamt4";		// Faction Mod Value 4
-	DBFieldNames[88]="unknown089";
-	DBFieldNames[89]="charmfile";		// ** Charm File
-	DBFieldNames[90]="unknown091";
-	DBFieldNames[91]="augslot1type";	// Slot1Type
-	DBFieldNames[92]="augslot2type";	// Slot2Type
-	DBFieldNames[93]="augslot3type";	// Slot3Type
-	DBFieldNames[94]="augslot4type";	// Slot4Type
-	DBFieldNames[95]="augslot5type";	// Slot5Type
-	DBFieldNames[96]="ldonpointtheme";
-	DBFieldNames[97]="ldonpointcost";		// ?
-	DBFieldNames[98]="unknown099";
-	DBFieldNames[99]="bagtype";		// bag type
-	DBFieldNames[100]="bagslots";		// bag slots
-	DBFieldNames[101]="bagsize";		// bag size capacity
-	DBFieldNames[102]="bagwr";		// bag weight reduction
-	DBFieldNames[103]="booktype";		// "book type (0=rolled up note, 1=book)"
-	DBFieldNames[104]="unknown105";
-	DBFieldNames[105]="filename";		// Book Filename
-	DBFieldNames[106]="unknown107";
-	DBFieldNames[107]="unknown108";
-	DBFieldNames[108]="loreflag";
-	DBFieldNames[109]="unknown111";
-	DBFieldNames[110]="unknown112";
-	DBFieldNames[111]="unknown113";
-	DBFieldNames[112]="unknown114";
-	DBFieldNames[113]="unknown115";		// ? (end quote)
-}
-
-void encode_length(unsigned long length, char *out)
-{
-char buf[4];
-	memcpy(buf,&length,sizeof(unsigned long));
-	encode_chunk(buf,3,out);
-}
-
-unsigned long encode(char *in, unsigned long length, char *out)
-{
-unsigned long used=0,len=0;
-	while(used<length) {
-		encode_chunk(in+used,length-used,out+len);
-		used+=3;
-		len+=4;
-	}
-	*(out+len)=0;
-
-	return len;
-}
-
-unsigned long decode_length(char *in)
-{
-int length;
-char buf[4];
-	decode_chunk(in,&buf[0]);
-	buf[3]=0;
-	memcpy(&length,buf,sizeof(unsigned long));
-
-	return length;
-}
-
-void decode(char *in, char *out)
-{
-char *ptr=in;
-char *outptr=out;
-	while(*ptr) {
-		decode_chunk(ptr,outptr);
-		ptr+=4;
-		outptr+=3;
-	}
-	*outptr=0;
-}
-
-void encode_chunk(char *in, int len, char *out)
-{
-	*out=ENC(in[0] >> 2);
-	*(out+1)=ENC((in[0] << 4)|(((len<2 ? 0 : in[1]) >> 4) & 0xF));
-	*(out+2)=ENC(((len<2 ? 0 : in[1]) << 2)|(((len<3 ? 0 : in[2]) >> 6) & 0x3));
-	*(out+3)=ENC((len<3 ? 0 : in[2]));
-}
-
-void decode_chunk(char *in, char *out)
-{
-	*out = DEC(*in) << 2 | DEC(in[1]) >> 4;
-	*(out+1) = DEC(in[1]) << 4 | DEC(in[2]) >> 2;
-	*(out+2) = DEC(in[2]) << 6 | DEC(in[3]);
 }
 
 void dump_message_column(unsigned char *buffer, unsigned long length, std::string leader, FILE *to)

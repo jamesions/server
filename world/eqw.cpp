@@ -25,7 +25,7 @@
 #include "../common/races.h"
 #include "../common/classes.h"
 #include "../common/misc.h"
-#include "../common/string_util.h"
+#include "../common/strings.h"
 #include "zoneserver.h"
 #include "zonelist.h"
 #include "clientlist.h"
@@ -37,6 +37,7 @@
 #include "launcher_list.h"
 #include "launcher_link.h"
 #include "wguild_mgr.h"
+#include "../common/emu_constants.h"
 
 #ifdef seed
 #undef seed
@@ -130,7 +131,7 @@ std::vector<std::string> EQW::ListBootedZones() {
 std::map<std::string,std::string> EQW::GetZoneDetails(Const_char *zone_ref) {
 	std::map<std::string,std::string> res;
 
-	ZoneServer *zs = zoneserver_list.FindByID(atoi(zone_ref));
+	ZoneServer *zs = zoneserver_list.FindByID(Strings::ToInt(zone_ref));
 	if(zs == nullptr) {
 		res["error"] = "Invalid zone.";
 		return(res);
@@ -188,7 +189,7 @@ std::map<std::string,std::string> EQW::GetPlayerDetails(Const_char *char_name) {
 	res["character"] = cle->name();
 	res["account"] = cle->AccountName();
 	res["account_id"] = itoa(cle->AccountID());
-	res["location_short"] = cle->zone()?database.GetZoneName(cle->zone()):"No Zone";
+	res["location_short"] = cle->zone()?ZoneName(cle->zone()):"No Zone";
 	res["location_long"] = res["location_short"];
 	res["location_id"] = itoa(cle->zone());
 	res["ip"] = long2ip(cle->GetIP());
@@ -261,84 +262,6 @@ void EQW::CreateLauncher(Const_char *launcher_name, int dynamic_count) {
 	launcher_list.CreateLauncher(launcher_name, dynamic_count);
 }
 
-void EQW::LSReconnect() {
-	#ifdef _WINDOWS
-		_beginthread(AutoInitLoginServer, 0, nullptr);
-	#else
-		pthread_t thread;
-		pthread_create(&thread, nullptr, &AutoInitLoginServer, nullptr);
-	#endif
-	RunLoops = true;
-	Log.Out(Logs::Detail, Logs::World_Server,"Login Server Reconnect manually restarted by Web Tool");
-}
-
-/*EQLConfig * EQW::FindLauncher(Const_char *zone_ref) {
-	return(nullptr);
-}*/
-
-/*
-map<string,string> EQW::GetLaunchersDetails(Const_char *launcher_name) {
-	map<string,string> res;
-
-	LauncherLink *ll = launcher_list.Get(launcher_name);
-	if(ll == nullptr) {
-		res["name"] = launcher_name;
-		res["ip"] = "Not Connected";
-		res["id"] = "0";
-		res["zone_count"] = "0";
-		res["connected"] = "no";
-		return(res);
-	} else {
-		res["name"] = ll->GetName();
-		res["ip"] = long2ip(ll->GetIP());
-		res["id"] = itoa(ll->GetID());
-		res["zone_count"] = itoa(ll->CountZones());
-		res["connected"] = "yes";
-	}
-
-	return(res);
-}
-
-vector<string> EQW::ListLauncherZones(Const_char *launcher_name) {
-	vector<string> list;
-	LauncherLink *ll = launcher_list.Get(launcher_name);
-	if(ll != nullptr) {
-		ll->GetZoneList(list);
-	}
-	return(list);
-}
-
-map<string,string> EQW::GetLauncherZoneDetails(Const_char *launcher_name, Const_char *zone_ref) {
-	map<string,string> res;
-	LauncherLink *ll = launcher_list.Get(launcher_name);
-	if(ll != nullptr) {
-		ll->GetZoneDetails(zone_ref, res);
-	} else {
-		res["error"] = "Launcher Not Found";
-	}
-	return(res);
-}
-
-void EQW::CreateLauncher(Const_char *launcher_name, int dynamic_count) {
-}
-
-bool EQW::BootStaticZone(Const_char *launcher_name, Const_char *short_name) {
-	return(false);
-}
-
-bool EQW::DeleteStaticZone(Const_char *launcher_name, Const_char *short_name) {
-	return(false);
-}
-
-bool EQW::SetDynamicCount(Const_char *launcher_name, int count) {
-	return(false);
-}
-
-int EQW::GetDynamicCount(Const_char *launcher_name) {
-	return(0);
-}
-*/
-
 uint32 EQW::CreateGuild(const char* name, uint32 leader_char_id) {
 	uint32 id = guild_mgr.CreateGuild(name, leader_char_id);
 	if(id != GUILD_NONE)
@@ -393,7 +316,7 @@ int EQW::CountBugs() {
         return 0;
 
     auto row = results.begin();
-    return atoi(row[0]);
+    return Strings::ToInt(row[0]);
 }
 
 std::vector<std::string> EQW::ListBugs(uint32 offset) {
@@ -438,7 +361,13 @@ void EQW::ResolveBug(const char *id) {
 }
 
 void EQW::SendMessage(uint32 type, const char *msg) {
-    zoneserver_list.SendEmoteMessage(0, 0, 0, type, msg);
+    zoneserver_list.SendEmoteMessage(
+		0,
+		0,
+		AccountStatus::Player,
+		type,
+		msg
+	);
 }
 
 void EQW::WorldShutDown(uint32 time, uint32 interval) {

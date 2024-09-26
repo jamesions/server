@@ -20,110 +20,124 @@
 #include "../common/global_define.h"
 #include "../common/eqemu_logsys.h"
 #include "../common/opcodemgr.h"
-#include "../common/eq_stream_factory.h"
 #include "../common/rulesys.h"
 #include "../common/servertalk.h"
 #include "../common/platform.h"
 #include "../common/crash.h"
+#include "../common/strings.h"
+#include "../common/event/event_loop.h"
+#include "../common/timer.h"
 #include "database.h"
 #include "queryservconfig.h"
-#include "worldserver.h"
 #include "lfguild.h"
+#include "worldserver.h"
+#include "../common/path_manager.h"
+#include "../common/zone_store.h"
+#include "../common/events/player_event_logs.h"
 #include <list>
 #include <signal.h>
+#include <thread>
 
 volatile bool RunLoops = true;
 
-TimeoutManager timeout_manager;
-Database database;
-LFGuildManager lfguildmanager;
-std::string WorldShortName;
+QSDatabase              database;
+LFGuildManager        lfguildmanager;
+std::string           WorldShortName;
 const queryservconfig *Config;
-WorldServer *worldserver = 0;
-EQEmuLogSys Log;
+WorldServer           *worldserver = 0;
+EQEmuLogSys           LogSys;
+PathManager           path;
+ZoneStore             zone_store;
+PlayerEventLogs       player_event_logs;
 
-void CatchSignal(int sig_num) { 
-	RunLoops = false; 
-	if(worldserver)
-		worldserver->Disconnect();
+void CatchSignal(int sig_num)
+{
+	RunLoops = false;
 }
 
-int main() {
+int main()
+{
 	RegisterExecutablePlatform(ExePlatformQueryServ);
-	Log.LoadLogSettingsDefaults();
-	set_exception_handler(); 
-	Timer LFGuildExpireTimer(60000);  
-	Timer InterserverTimer(INTERSERVER_TIMER); // does auto-reconnect
+	LogSys.LoadLogSettingsDefaults();
+	set_exception_handler();
+	Timer LFGuildExpireTimer(60000);
 
-	/* Load XML from eqemu_config.xml 
-		<qsdatabase>
-			<host>127.0.0.1</host>
-			<port>3306</port>
-			<username>user</username>
-			<password>password</password>
-			<db>dbname</db>
-		</qsdatabase>
-	*/
+	path.LoadPaths();
 
-	Log.Out(Logs::General, Logs::QS_Server, "Starting EQEmu QueryServ.");
+	LogInfo("Starting EQEmu QueryServ");
 	if (!queryservconfig::LoadConfig()) {
-		Log.Out(Logs::General, Logs::QS_Server, "Loading server configuration failed.");
+		LogInfo("Loading server configuration failed");
 		return 1;
 	}
 
-	Config = queryservconfig::get(); 
-	WorldShortName = Config->ShortName; 
+	Config         = queryservconfig::get();
+	WorldShortName = Config->ShortName;
 
-	Log.Out(Logs::General, Logs::QS_Server, "Connecting to MySQL...");
-	
+	LogInfo("Connecting to MySQL");
+
 	/* MySQL Connection */
 	if (!database.Connect(
 		Config->QSDatabaseHost.c_str(),
 		Config->QSDatabaseUsername.c_str(),
 		Config->QSDatabasePassword.c_str(),
 		Config->QSDatabaseDB.c_str(),
-		Config->QSDatabasePort)) {
-		Log.Out(Logs::General, Logs::QS_Server, "Cannot continue without a database connection.");
+		Config->QSDatabasePort
+	)) {
+		LogInfo("Cannot continue without a database connection");
 		return 1;
 	}
 
-	/* Register Log System and Settings */
-	database.LoadLogSettings(Log.log_settings);
-	Log.StartFileLogs();
+	LogSys.SetDatabase(&database)
+		->SetLogPath(path.GetLogPath())
+		->LoadLogDatabaseSettings()
+		->StartFileLogs();
 
-	if (signal(SIGINT, CatchSignal) == SIG_ERR)	{
-		Log.Out(Logs::General, Logs::QS_Server, "Could not set signal handler");
+	if (signal(SIGINT, CatchSignal) == SIG_ERR) {
+		LogInfo("Could not set signal handler");
 		return 1;
 	}
-	if (signal(SIGTERM, CatchSignal) == SIG_ERR)	{
-		Log.Out(Logs::General, Logs::QS_Server, "Could not set signal handler");
+	if (signal(SIGTERM, CatchSignal) == SIG_ERR) {
+		LogInfo("Could not set signal handler");
 		return 1;
 	}
 
 	/* Initial Connection to Worldserver */
 	worldserver = new WorldServer;
-	worldserver->Connect(); 
+	worldserver->Connect();
 
 	/* Load Looking For Guild Manager */
 	lfguildmanager.LoadDatabase();
 
-	while(RunLoops) { 
-		Timer::SetCurrentTime(); 
-		if(LFGuildExpireTimer.Check())
-			lfguildmanager.ExpireEntries();
+	Timer player_event_process_timer(1000);
+	player_event_logs.SetDatabase(&database)->Init();
 
-		if (InterserverTimer.Check()) {
-			if (worldserver->TryReconnect() && (!worldserver->Connected()))
-				worldserver->AsyncConnect();
+	auto loop_fn = [&](EQ::Timer* t) {
+		Timer::SetCurrentTime();
+
+		if (!RunLoops) {
+			EQ::EventLoop::Get().Shutdown();
+			return;
 		}
-		worldserver->Process(); 
-		timeout_manager.CheckTimeouts(); 
-		Sleep(100);
-	}
-	Log.CloseFileLogs();
+
+		if (LFGuildExpireTimer.Check()) {
+			lfguildmanager.ExpireEntries();
+		}
+
+		if (player_event_process_timer.Check()) {
+			player_event_logs.Process();
+		}
+	};
+
+	EQ::Timer process_timer(loop_fn);
+	process_timer.Start(32, true);
+
+	EQ::EventLoop::Get().Run();
+
+	LogSys.CloseFileLogs();
 }
 
-void UpdateWindowTitle(char* iNewTitle) {
+void UpdateWindowTitle(char *iNewTitle)
+{
 #ifdef _WINDOWS
 	char tmp[500];
 	if (iNewTitle) {

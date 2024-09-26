@@ -1,5 +1,5 @@
 /*	EQEMu: Everquest Server Emulator
-	
+
 	Copyright (C) 2001-2016 EQEMu Development Team (http://eqemulator.net)
 
 	This program is free software; you can redistribute it and/or modify
@@ -28,10 +28,17 @@
 
 #include "../eq_packet_structs.h"
 #include "../misc_functions.h"
-#include "../string_util.h"
+#include "../strings.h"
 #include "../item_instance.h"
 #include "uf_structs.h"
 #include "../rulesys.h"
+#include "../path_manager.h"
+#include "../classes.h"
+#include "../races.h"
+#include "../raid.h"
+#include "../guilds.h"
+//#include "../repositories/trader_repository.h"
+#include "../cereal/include/cereal/types/vector.hpp"
 
 #include <iostream>
 #include <sstream>
@@ -43,7 +50,7 @@ namespace UF
 	static OpcodeManager *opcodes = nullptr;
 	static Strategy struct_strategy;
 
-	void SerializeItem(EQEmu::OutBuffer& ob, const EQEmu::ItemInstance *inst, int16 slot_id, uint8 depth);
+	void SerializeItem(EQ::OutBuffer& ob, const EQ::ItemInstance *inst, int16 slot_id, uint8 depth);
 
 	// server to client inventory location converters
 	static inline uint32 ServerToUFSlot(uint32 serverSlot);
@@ -53,14 +60,14 @@ namespace UF
 	static inline uint32 UFToServerSlot(uint32 ufSlot);
 	static inline uint32 UFToServerCorpseSlot(uint32 ufCorpseSlot);
 
-	// server to client text link converter
-	static inline void ServerToUFTextLink(std::string& ufTextLink, const std::string& serverTextLink);
+	// server to client say link converter
+	static inline void ServerToUFSayLink(std::string& ufSayLink, const std::string& serverSayLink);
 
-	// client to server text link converter
-	static inline void UFToServerTextLink(std::string& serverTextLink, const std::string& ufTextLink);
+	// client to server say link converter
+	static inline void UFToServerSayLink(std::string& serverSayLink, const std::string& ufSayLink);
 
-	static inline CastingSlot ServerToUFCastingSlot(EQEmu::CastingSlot slot);
-	static inline EQEmu::CastingSlot UFToServerCastingSlot(CastingSlot slot);
+	static inline spells::CastingSlot ServerToUFCastingSlot(EQ::spells::CastingSlot slot);
+	static inline EQ::spells::CastingSlot UFToServerCastingSlot(spells::CastingSlot slot);
 
 	static inline int ServerToUFBuffSlot(int index);
 	static inline int UFToServerBuffSlot(int index);
@@ -69,24 +76,19 @@ namespace UF
 	{
 		//create our opcode manager if we havent already
 		if (opcodes == nullptr) {
-			//TODO: get this file name from the config file
-			auto Config = EQEmuConfig::get();
-			std::string opfile = Config->PatchDir;
-			opfile += "patch_";
-			opfile += name;
-			opfile += ".conf";
+			std::string opfile = fmt::format("{}/patch_{}.conf", path.GetPatchPath(), name);
 			//load up the opcode manager.
 			//TODO: figure out how to support shared memory with multiple patches...
 			opcodes = new RegularOpcodeManager();
 			if (!opcodes->LoadOpcodes(opfile.c_str())) {
-				Log.Out(Logs::General, Logs::Netcode, "[OPCODES] Error loading opcodes file %s. Not registering patch %s.", opfile.c_str(), name);
+				LogNetcode("[OPCODES] Error loading opcodes file [{}]. Not registering patch [{}]", opfile.c_str(), name);
 				return;
 			}
 		}
 
 		//ok, now we have what we need to register.
 
-		EQStream::Signature signature;
+		EQStreamInterface::Signature signature;
 		std::string pname;
 
 		//register our world signature.
@@ -105,7 +107,7 @@ namespace UF
 
 
 
-		Log.Out(Logs::General, Logs::Netcode, "[IDENTIFY] Registered patch %s", name);
+		LogNetcode("[StreamIdentify] Registered patch [{}]", name);
 	}
 
 	void Reload()
@@ -115,17 +117,12 @@ namespace UF
 		//we need to go to every stream and replace it's manager.
 
 		if (opcodes != nullptr) {
-			//TODO: get this file name from the config file
-			auto Config = EQEmuConfig::get();
-			std::string opfile = Config->PatchDir;
-			opfile += "patch_";
-			opfile += name;
-			opfile += ".conf";
+			std::string opfile = fmt::format("{}/patch_{}.conf", path.GetPatchPath(), name);
 			if (!opcodes->ReloadOpcodes(opfile.c_str())) {
-				Log.Out(Logs::General, Logs::Netcode, "[OPCODES] Error reloading opcodes file %s for patch %s.", opfile.c_str(), name);
+				LogNetcode("[OPCODES] Error reloading opcodes file [{}] for patch [{}]", opfile.c_str(), name);
 				return;
 			}
-			Log.Out(Logs::General, Logs::Netcode, "[OPCODES] Reloaded opcodes for patch %s", name);
+			LogNetcode("[OPCODES] Reloaded opcodes for patch [{}]", name);
 		}
 	}
 
@@ -144,9 +141,9 @@ namespace UF
 		return(r);
 	}
 
-	const EQEmu::versions::ClientVersion Strategy::ClientVersion() const
+	const EQ::versions::ClientVersion Strategy::ClientVersion() const
 	{
-		return EQEmu::versions::ClientVersion::UF;
+		return EQ::versions::ClientVersion::UF;
 	}
 
 #include "ss_define.h"
@@ -161,29 +158,20 @@ namespace UF
 		OUT(source);
 		OUT(level);
 		eq->instrument_mod = 1.0f + (emu->instrument_mod - 10) / 10.0f;
-		eq->knockback_angle = emu->sequence;
+		OUT(force);
+		OUT(hit_heading);
+		OUT(hit_pitch);
 		OUT(type);
 		OUT(spell);
-		eq->level2 = eq->level;
-		eq->effect_flag = emu->buff_unknown;
-		eq->unknown37 = 0x01;
-		eq->unknown44 = 0xFFFFFFFF;
-		eq->unknown48 = 0xFFFFFFFF;
-		eq->unknown52 = 0xFFFFFFFF;
-
-		/*OUT(target);
-		OUT(source);
-		OUT(level);
-		OUT(instrument_mod);
-		eq->sequence = emu->sequence;
-		OUT(type);
-		//OUT(damage);
-		OUT(spell);
-		eq->level2 = emu->level;
-		OUT(buff_unknown); // if this is 4, a buff icon is made
-		//eq->unknown0036 = -1;
-		//eq->unknown0040 = -1;
-		//eq->unknown0044 = -1;*/
+		OUT(spell_level);
+		OUT(effect_flag);
+		eq->spell_gem = 0;
+		eq->slot[0] = -1; // type
+		eq->slot[1] = -1; // slot
+		eq->slot[2] = -1; // sub index
+		eq->slot[3] = -1; // aug index
+		eq->slot[4] = -1; // unknown
+		eq->item_cast_type = 0;
 
 		FINISH_ENCODE();
 	}
@@ -210,7 +198,7 @@ namespace UF
 		unsigned char *emu_buffer = in->pBuffer;
 		uint32 opcode = *((uint32*)emu_buffer);
 
-		if (opcode == 8) {
+		if (opcode == AlternateCurrencyMode::Populate) {
 			AltCurrencyPopulate_Struct *populate = (AltCurrencyPopulate_Struct*)emu_buffer;
 
 			auto outapp = new EQApplicationPacket(
@@ -321,50 +309,134 @@ namespace UF
 		EQApplicationPacket *in = *p;
 		*p = nullptr;
 
-		char *Buffer = (char *)in->pBuffer;
+		uint32 action = *(uint32 *)in->pBuffer;
 
-		uint8 SubAction = VARSTRUCT_DECODE_TYPE(uint8, Buffer);
+		switch (action) {
+			case BazaarSearch: {
+				LogTrading(
+					"Encode OP_BazaarSearch(UF) BazaarSearch action <green>[{}]",
+					action
+				);
+				std::vector<BazaarSearchResultsFromDB_Struct> results {};
+				auto bsms = (BazaarSearchMessaging_Struct *)in->pBuffer;
+				EQ::Util::MemoryStreamReader ss(
+					reinterpret_cast<char *>(bsms->payload),
+					in->size - sizeof(BazaarSearchMessaging_Struct)
+				);
+				cereal::BinaryInputArchive ar(ss);
+				ar(results);
 
-		if (SubAction != BazaarSearchResults)
-		{
-			dest->FastQueuePacket(&in, ack_req);
-			return;
+				auto  size    = results.size() * sizeof(BazaarSearchResults_Struct);
+				auto  buffer  = new uchar[size];
+				uchar *bufptr = buffer;
+				memset(buffer, 0, size);
+
+				for (auto row = results.begin(); row != results.end(); ++row) {
+					VARSTRUCT_ENCODE_TYPE(uint32, bufptr, structs::UFBazaarTraderBuyerActions::BazaarSearch);
+					VARSTRUCT_ENCODE_TYPE(uint32, bufptr, row->trader_entity_id);
+					strn0cpy(reinterpret_cast<char *>(bufptr), row->trader_name.c_str(), 64);
+					bufptr += 64;
+					VARSTRUCT_ENCODE_TYPE(uint32, bufptr, 1);
+					VARSTRUCT_ENCODE_TYPE(int32, bufptr, row->item_id);
+					VARSTRUCT_ENCODE_TYPE(int32, bufptr, row->serial_number);
+					bufptr += 4;
+					if (row->stackable) {
+						strn0cpy(
+							reinterpret_cast<char *>(bufptr),
+							fmt::format("{}({})", row->item_name.c_str(), row->charges).c_str(),
+							64
+						);
+					}
+					else {
+						strn0cpy(
+							reinterpret_cast<char *>(bufptr),
+							fmt::format("{}({})", row->item_name.c_str(), row->count).c_str(),
+							64
+						);
+					}
+					bufptr += 64;
+					VARSTRUCT_ENCODE_TYPE(uint32, bufptr, row->cost);
+					VARSTRUCT_ENCODE_TYPE(uint32, bufptr, row->item_stat);
+				}
+
+				auto outapp = new EQApplicationPacket(OP_BazaarSearch, size);
+				memcpy(outapp->pBuffer, buffer, size);
+				dest->FastQueuePacket(&outapp);
+
+				safe_delete(outapp);
+				safe_delete_array(buffer);
+				safe_delete(in);
+				break;
+			}
+			case BazaarInspect:
+			case WelcomeMessage: {
+				LogTrading(
+					"Encode OP_BazaarSearch(UF) BazaarInspect/WelcomeMessage action <green>[{}]",
+					action
+				);
+				dest->FastQueuePacket(&in, ack_req);
+				break;
+			}
+			default: {
+				LogTrading(
+					"Encode OP_BazaarSearch(UF) unhandled action <red>[{}]",
+					action
+				);
+				dest->FastQueuePacket(&in, ack_req);
+			}
 		}
+	}
 
-		unsigned char *__emu_buffer = in->pBuffer;
+	ENCODE(OP_BecomeTrader)
+	{
+		uint32 action = *(uint32 *)(*p)->pBuffer;
 
-		BazaarSearchResults_Struct *emu = (BazaarSearchResults_Struct *)__emu_buffer;
-
-		int EntryCount = in->size / sizeof(BazaarSearchResults_Struct);
-
-		if (EntryCount == 0 || (in->size % sizeof(BazaarSearchResults_Struct)) != 0)
+		switch (action)
 		{
-			Log.Out(Logs::General, Logs::Netcode, "[STRUCTS] Wrong size on outbound %s: Got %d, expected multiple of %d", opcodes->EmuToName(in->GetOpcode()), in->size, sizeof(BazaarSearchResults_Struct));
-			delete in;
-			return;
+			case TraderOff:
+			{
+				ENCODE_LENGTH_EXACT(BecomeTrader_Struct);
+				SETUP_DIRECT_ENCODE(BecomeTrader_Struct, structs::BecomeTrader_Struct);
+				LogTrading(
+                    "Encode OP_BecomeTrader(UF) TraderOff action <green>[{}] entity_id <green>[{}] trader_name "
+                    "<green>[{}]",
+                    emu->action,
+                    emu->entity_id,
+                    emu->trader_name
+                );
+				eq->action    = structs::UFBazaarTraderBuyerActions::Zero;
+				eq->entity_id = emu->entity_id;
+				FINISH_ENCODE();
+				break;
+			}
+			case TraderOn:
+			{
+				ENCODE_LENGTH_EXACT(BecomeTrader_Struct);
+				SETUP_DIRECT_ENCODE(BecomeTrader_Struct, structs::BecomeTrader_Struct);
+				LogTrading(
+                    "Encode OP_BecomeTrader(UF) TraderOn action <green>[{}] entity_id <green>[{}] trader_name "
+                    "<green>[{}]",
+                    emu->action,
+                    emu->entity_id,
+                    emu->trader_name
+                );
+				eq->action    = structs::UFBazaarTraderBuyerActions::BeginTraderMode;
+				eq->entity_id = emu->entity_id;
+				strn0cpy(eq->trader_name, emu->trader_name, sizeof(eq->trader_name));
+				FINISH_ENCODE();
+				break;
+			}
+			default:
+			{
+				LogTrading(
+					"Encode OP_BecomeTrader(UF) unhandled action <red>[{}] Sending packet as is.",
+					action
+				);
+				EQApplicationPacket *in = *p;
+				*p = nullptr;
+				dest->FastQueuePacket(&in, ack_req);
+			}
 		}
-
-		in->size = EntryCount * sizeof(structs::BazaarSearchResults_Struct);
-		in->pBuffer = new unsigned char[in->size];
-		memset(in->pBuffer, 0, in->size);
-
-		structs::BazaarSearchResults_Struct *eq = (structs::BazaarSearchResults_Struct *)in->pBuffer;
-
-		for (int i = 0; i < EntryCount; ++i, ++emu, ++eq)
-		{
-			OUT(Beginning.Action);
-			OUT(SellerID);
-			memcpy(eq->SellerName, emu->SellerName, sizeof(eq->SellerName));
-			OUT(NumItems);
-			OUT(ItemID);
-			OUT(SerialNumber);
-			memcpy(eq->ItemName, emu->ItemName, sizeof(eq->ItemName));
-			OUT(Cost);
-			OUT(ItemStat);
-		}
-
-		delete[] __emu_buffer;
-		dest->FastQueuePacket(&in, ack_req);
 	}
 
 	ENCODE(OP_Buff)
@@ -391,7 +463,7 @@ namespace UF
 	{
 		SETUP_VAR_ENCODE(BuffIcon_Struct);
 
-		uint32 sz = 12 + (17 * emu->count);
+		uint32 sz = 12 + (17 * emu->count) + emu->name_lengths; // 17 includes nullterm
 		__packet->size = sz;
 		__packet->pBuffer = new unsigned char[sz];
 		memset(__packet->pBuffer, 0, sz);
@@ -407,7 +479,7 @@ namespace UF
 			__packet->WriteUInt32(emu->entries[i].spell_id);
 			__packet->WriteUInt32(emu->entries[i].tics_remaining);
 			__packet->WriteUInt32(emu->entries[i].num_hits);
-			__packet->WriteString("");
+			__packet->WriteString(emu->entries[i].caster);
 		}
 		__packet->WriteUInt8(emu->type);
 
@@ -463,7 +535,7 @@ namespace UF
 
 		std::string old_message = emu->message;
 		std::string new_message;
-		ServerToUFTextLink(new_message, old_message);
+		ServerToUFSayLink(new_message, old_message);
 
 		//in->size = strlen(emu->sender) + 1 + strlen(emu->targetname) + 1 + strlen(emu->message) + 1 + 36;
 		in->size = strlen(emu->sender) + strlen(emu->targetname) + new_message.length() + 39;
@@ -510,33 +582,33 @@ namespace UF
 		//store away the emu struct
 		uchar* __emu_buffer = in->pBuffer;
 
-		int item_count = in->size / sizeof(EQEmu::InternalSerializedItem_Struct);
-		if (!item_count || (in->size % sizeof(EQEmu::InternalSerializedItem_Struct)) != 0) {
-			Log.Out(Logs::General, Logs::Netcode, "[STRUCTS] Wrong size on outbound %s: Got %d, expected multiple of %d",
-				opcodes->EmuToName(in->GetOpcode()), in->size, sizeof(EQEmu::InternalSerializedItem_Struct));
+		int item_count = in->size / sizeof(EQ::InternalSerializedItem_Struct);
+		if (!item_count || (in->size % sizeof(EQ::InternalSerializedItem_Struct)) != 0) {
+			Log(Logs::General, Logs::Netcode, "[STRUCTS] Wrong size on outbound %s: Got %d, expected multiple of %d",
+				opcodes->EmuToName(in->GetOpcode()), in->size, sizeof(EQ::InternalSerializedItem_Struct));
 
 			delete in;
 			return;
 		}
 
-		EQEmu::InternalSerializedItem_Struct* eq = (EQEmu::InternalSerializedItem_Struct*)in->pBuffer;
+		EQ::InternalSerializedItem_Struct* eq = (EQ::InternalSerializedItem_Struct*)in->pBuffer;
 
-		EQEmu::OutBuffer ob;
-		EQEmu::OutBuffer::pos_type last_pos = ob.tellp();
+		EQ::OutBuffer ob;
+		EQ::OutBuffer::pos_type last_pos = ob.tellp();
 
 		ob.write((const char*)&item_count, sizeof(uint32));
 
 		for (int index = 0; index < item_count; ++index, ++eq) {
-			SerializeItem(ob, (const EQEmu::ItemInstance*)eq->inst, eq->slot_id, 0);
+			SerializeItem(ob, (const EQ::ItemInstance*)eq->inst, eq->slot_id, 0);
 			if (ob.tellp() == last_pos)
-				Log.Out(Logs::General, Logs::Netcode, "[STRUCTS] Serialization failed on item slot %d during OP_CharInventory.  Item skipped.", eq->slot_id);
+				LogNetcode("UF::ENCODE(OP_CharInventory) Serialization failed on item slot [{}] during OP_CharInventory.  Item skipped", eq->slot_id);
 
 			last_pos = ob.tellp();
 		}
 
 		in->size = ob.size();
 		in->pBuffer = ob.detach();
-		
+
 		delete[] __emu_buffer;
 
 		dest->FastQueuePacket(&in, ack_req);
@@ -586,14 +658,19 @@ namespace UF
 		OUT(spellid);
 		OUT(damage);
 		OUT(force);
-		OUT(meleepush_xy);
-		OUT(meleepush_z);
+		OUT(hit_heading);
+		OUT(hit_pitch);
 		OUT(special);
 
 		FINISH_ENCODE();
 	}
 
-	ENCODE(OP_DeleteCharge) { ENCODE_FORWARD(OP_MoveItem); }
+	ENCODE(OP_DeleteCharge)
+	{
+		Log(Logs::Detail, Logs::Netcode, "UF::ENCODE(OP_DeleteCharge)");
+
+		ENCODE_FORWARD(OP_MoveItem);
+	}
 
 	ENCODE(OP_DeleteItem)
 	{
@@ -617,18 +694,28 @@ namespace UF
 		FINISH_ENCODE();
 	}
 
-	ENCODE(OP_DzCompass)
+	ENCODE(OP_DzChooseZone)
 	{
-		SETUP_VAR_ENCODE(ExpeditionCompass_Struct);
-		ALLOC_VAR_ENCODE(structs::ExpeditionCompass_Struct, sizeof(structs::ExpeditionInfo_Struct) + sizeof(structs::ExpeditionCompassEntry_Struct) * emu->count);
-		OUT(count);
+		SETUP_VAR_ENCODE(DynamicZoneChooseZone_Struct);
+
+		SerializeBuffer buf;
+		buf.WriteUInt32(emu->client_id);
+		buf.WriteUInt32(emu->count);
 
 		for (uint32 i = 0; i < emu->count; ++i)
 		{
-			OUT(entries[i].x);
-			OUT(entries[i].y);
-			OUT(entries[i].z);
+			buf.WriteUInt16(emu->choices[i].dz_zone_id);
+			buf.WriteUInt16(emu->choices[i].dz_instance_id);
+			buf.WriteUInt32(emu->choices[i].unknown_id1);
+			buf.WriteUInt32(emu->choices[i].dz_type);
+			buf.WriteUInt32(emu->choices[i].unknown_id2);
+			buf.WriteString(emu->choices[i].description);
+			buf.WriteString(emu->choices[i].leader_name);
 		}
+
+		__packet->size = buf.size();
+		__packet->pBuffer = new unsigned char[__packet->size];
+		memcpy(__packet->pBuffer, buf.buffer(), __packet->size);
 
 		FINISH_ENCODE();
 	}
@@ -645,110 +732,106 @@ namespace UF
 
 	ENCODE(OP_DzExpeditionInfo)
 	{
-		ENCODE_LENGTH_EXACT(ExpeditionInfo_Struct);
-		SETUP_DIRECT_ENCODE(ExpeditionInfo_Struct, structs::ExpeditionInfo_Struct);
+		ENCODE_LENGTH_EXACT(DynamicZoneInfo_Struct);
+		SETUP_DIRECT_ENCODE(DynamicZoneInfo_Struct, structs::DynamicZoneInfo_Struct);
 
+		OUT(client_id);
+		OUT(assigned);
 		OUT(max_players);
-		eq->unknown004 = 785316192;
-		eq->unknown008 = 435601;
-		strcpy(eq->expedition_name, emu->expedition_name);
-		strcpy(eq->leader_name, emu->leader_name);
+		strn0cpy(eq->dz_name, emu->dz_name, sizeof(eq->dz_name));
+		strn0cpy(eq->leader_name, emu->leader_name, sizeof(eq->leader_name));
 
 		FINISH_ENCODE();
 	}
 
-	ENCODE(OP_DzExpeditionList)
+	ENCODE(OP_DzExpeditionInvite)
 	{
-		SETUP_VAR_ENCODE(ExpeditionLockoutList_Struct);
+		ENCODE_LENGTH_EXACT(ExpeditionInvite_Struct);
+		SETUP_DIRECT_ENCODE(ExpeditionInvite_Struct, structs::ExpeditionInvite_Struct);
 
-		std::stringstream ss(std::stringstream::in | std::stringstream::out | std::stringstream::binary);
-		uint32 client_id = 0;
-		uint8 null_term = 0;
-		ss.write((const char*)&client_id, sizeof(uint32));
-		ss.write((const char*)&emu->count, sizeof(uint32));
+		OUT(client_id);
+		strn0cpy(eq->inviter_name, emu->inviter_name, sizeof(eq->inviter_name));
+		strn0cpy(eq->expedition_name, emu->expedition_name, sizeof(eq->expedition_name));
+		OUT(swapping);
+		strn0cpy(eq->swap_name, emu->swap_name, sizeof(eq->swap_name));
+		OUT(dz_zone_id);
+		OUT(dz_instance_id);
+
+		FINISH_ENCODE();
+	}
+
+	ENCODE(OP_DzExpeditionLockoutTimers)
+	{
+		SETUP_VAR_ENCODE(ExpeditionLockoutTimers_Struct);
+
+		SerializeBuffer buf;
+		buf.WriteUInt32(emu->client_id);
+		buf.WriteUInt32(emu->count);
 		for (uint32 i = 0; i < emu->count; ++i)
 		{
-			ss.write(emu->entries[i].expedition, strlen(emu->entries[i].expedition));
-			ss.write((const char*)&null_term, sizeof(char));
-			ss.write((const char*)&emu->entries[i].time_left, sizeof(uint32));
-			ss.write((const char*)&client_id, sizeof(uint32));
-			ss.write(emu->entries[i].expedition_event, strlen(emu->entries[i].expedition_event));
-			ss.write((const char*)&null_term, sizeof(char));
+			buf.WriteString(emu->timers[i].expedition_name);
+			buf.WriteUInt32(emu->timers[i].seconds_remaining);
+			buf.WriteInt32(emu->timers[i].event_type);
+			buf.WriteString(emu->timers[i].event_name);
 		}
 
-		__packet->size = ss.str().length();
+		__packet->size = buf.size();
 		__packet->pBuffer = new unsigned char[__packet->size];
-		memcpy(__packet->pBuffer, ss.str().c_str(), __packet->size);
+		memcpy(__packet->pBuffer, buf.buffer(), __packet->size);
 
 		FINISH_ENCODE();
 	}
 
-	ENCODE(OP_DzJoinExpeditionConfirm)
+	ENCODE(OP_DzSetLeaderName)
 	{
-		ENCODE_LENGTH_EXACT(ExpeditionJoinPrompt_Struct);
-		SETUP_DIRECT_ENCODE(ExpeditionJoinPrompt_Struct, structs::ExpeditionJoinPrompt_Struct);
+		ENCODE_LENGTH_EXACT(DynamicZoneLeaderName_Struct);
+		SETUP_DIRECT_ENCODE(DynamicZoneLeaderName_Struct, structs::DynamicZoneLeaderName_Struct);
 
-		strcpy(eq->expedition_name, emu->expedition_name);
-		strcpy(eq->player_name, emu->player_name);
-
-		FINISH_ENCODE();
-	}
-
-	ENCODE(OP_DzLeaderStatus)
-	{
-		SETUP_VAR_ENCODE(ExpeditionLeaderSet_Struct);
-
-		std::stringstream ss(std::stringstream::in | std::stringstream::out | std::stringstream::binary);
-		uint32 client_id = 0;
-		uint8 null_term = 0;
-
-		ss.write((const char*)&client_id, sizeof(uint32));
-		ss.write((const char*)&client_id, sizeof(uint32));
-		ss.write(emu->leader_name, strlen(emu->leader_name));
-		ss.write((const char*)&null_term, sizeof(char));
-		ss.write((const char*)&client_id, sizeof(uint32));
-		ss.write((const char*)&client_id, sizeof(uint32));//0xffffffff
-		ss.write((const char*)&client_id, sizeof(uint32));
-		ss.write((const char*)&client_id, sizeof(uint32));
-		ss.write((const char*)&client_id, sizeof(uint32));
-		ss.write((const char*)&client_id, sizeof(uint32));
-		ss.write((const char*)&client_id, sizeof(uint32));
-		ss.write((const char*)&client_id, sizeof(uint32));
-		ss.write((const char*)&client_id, sizeof(uint32));
-		ss.write((const char*)&client_id, sizeof(uint32));
-		ss.write((const char*)&client_id, sizeof(uint32));
-		ss.write((const char*)&client_id, sizeof(uint32));//1
-		ss.write((const char*)&client_id, sizeof(uint32));
-
-		__packet->size = ss.str().length();
-		__packet->pBuffer = new unsigned char[__packet->size];
-		memcpy(__packet->pBuffer, ss.str().c_str(), __packet->size);
+		OUT(client_id);
+		strn0cpy(eq->leader_name, emu->leader_name, sizeof(eq->leader_name));
 
 		FINISH_ENCODE();
 	}
 
 	ENCODE(OP_DzMemberList)
 	{
-		SETUP_VAR_ENCODE(ExpeditionMemberList_Struct);
+		SETUP_VAR_ENCODE(DynamicZoneMemberList_Struct);
 
-		std::stringstream ss(std::stringstream::in | std::stringstream::out | std::stringstream::binary);
-
-		uint32 client_id = 0;
-		uint8 null_term = 0;
-		ss.write((const char*)&client_id, sizeof(uint32));
-		ss.write((const char*)&emu->count, sizeof(uint32));
-		for (uint32 i = 0; i < emu->count; ++i)
+		SerializeBuffer buf;
+		buf.WriteUInt32(emu->client_id);
+		buf.WriteUInt32(emu->member_count);
+		for (uint32 i = 0; i < emu->member_count; ++i)
 		{
-			ss.write(emu->entries[i].name, strlen(emu->entries[i].name));
-			ss.write((const char*)&null_term, sizeof(char));
-			ss.write((const char*)&emu->entries[i].status, sizeof(char));
+			buf.WriteString(emu->members[i].name);
+			buf.WriteUInt8(emu->members[i].online_status);
 		}
 
-		__packet->size = ss.str().length();
+		__packet->size = buf.size();
 		__packet->pBuffer = new unsigned char[__packet->size];
-		memcpy(__packet->pBuffer, ss.str().c_str(), __packet->size);
+		memcpy(__packet->pBuffer, buf.buffer(), __packet->size);
 
 		FINISH_ENCODE();
+	}
+
+	ENCODE(OP_DzMemberListName)
+	{
+		ENCODE_LENGTH_EXACT(DynamicZoneMemberListName_Struct);
+		SETUP_DIRECT_ENCODE(DynamicZoneMemberListName_Struct, structs::DynamicZoneMemberListName_Struct);
+
+		OUT(client_id);
+		OUT(add_name);
+		strn0cpy(eq->name, emu->name, sizeof(eq->name));
+
+		FINISH_ENCODE();
+	}
+
+	ENCODE(OP_DzMemberListStatus)
+	{
+		auto emu = reinterpret_cast<DynamicZoneMemberList_Struct*>((*p)->pBuffer);
+		if (emu->member_count == 1)
+		{
+			ENCODE_FORWARD(OP_DzMemberList);
+		}
 	}
 
 	ENCODE(OP_Emote)
@@ -762,7 +845,7 @@ namespace UF
 
 		std::string old_message = emu->message;
 		std::string new_message;
-		ServerToUFTextLink(new_message, old_message);
+		ServerToUFSayLink(new_message, old_message);
 
 		//if (new_message.length() > 512) // length restricted in packet building function due vari-length name size (no nullterm)
 		//	new_message = new_message.substr(0, 512);
@@ -814,7 +897,7 @@ namespace UF
 
 		for (int i = 0; i < 9; ++i) {
 			if (old_message_array[i].length() == 0) { break; }
-			ServerToUFTextLink(new_message_array[i], old_message_array[i]);
+			ServerToUFSayLink(new_message_array[i], old_message_array[i]);
 			new_message_size += new_message_array[i].length() + 1;
 		}
 
@@ -932,7 +1015,7 @@ namespace UF
 		{
 			if ((gjs->action == groupActDisband) || !strcmp(gjs->yourname, gjs->membername))
 			{
-				//Log.LogDebugType(Logs::General, Logs::Netcode, "[ERROR] Group Leave, yourname = %s, membername = %s", gjs->yourname, gjs->membername);
+				//Log.LogDebugType(Logs::General, Logs::Netcode, "[ERROR] Group Leave, yourname = %s, member_name = %s", gjs->yourname, gjs->member_name);
 
 				auto outapp =
 				    new EQApplicationPacket(OP_GroupDisbandYou, sizeof(structs::GroupGeneric_Struct));
@@ -952,7 +1035,7 @@ namespace UF
 				return;
 			}
 			//if(gjs->action == groupActLeave)
-			//	Log.LogDebugType(Logs::General, Logs::Netcode, "[ERROR] Group Leave, yourname = %s, membername = %s", gjs->yourname, gjs->membername);
+			//	Log.LogDebugType(Logs::General, Logs::Netcode, "[ERROR] Group Leave, yourname = %s, member_name = %s", gjs->yourname, gjs->member_name);
 
 			auto outapp =
 			    new EQApplicationPacket(OP_GroupDisbandOther, sizeof(structs::GroupGeneric_Struct));
@@ -982,7 +1065,7 @@ namespace UF
 
 			for (int i = 0; i < 5; ++i)
 			{
-				//Log.LogDebugType(Logs::General, Logs::Netcode, "[ERROR] Membername[%i] is %s", i,  gu2->membername[i]);
+				//Log.LogDebugType(Logs::General, Logs::Netcode, "[ERROR] Membername[%i] is %s", i,  gu2->member_name[i]);
 				if (gu2->membername[i][0] != '\0')
 				{
 					PacketLength += (22 + strlen(gu2->membername[i]) + 1);
@@ -1050,7 +1133,7 @@ namespace UF
 			delete in;
 			return;
 		}
-		//Log.LogDebugType(Logs::General, Logs::Netcode, "[ERROR] Generic GroupUpdate, yourname = %s, membername = %s", gjs->yourname, gjs->membername);
+		//Log.LogDebugType(Logs::General, Logs::Netcode, "[ERROR] Generic GroupUpdate, yourname = %s, member_name = %s", gjs->yourname, gjs->member_name);
 		ENCODE_LENGTH_EXACT(GroupJoin_Struct);
 		SETUP_DIRECT_ENCODE(GroupJoin_Struct, structs::GroupJoin_Struct);
 
@@ -1138,6 +1221,30 @@ namespace UF
 				PutFieldN(level);
 				PutFieldN(banker);
 				PutFieldN(class_);
+				//Translate older ranks to new values* /
+				switch (emu_e->rank) {
+					case GUILD_SENIOR_MEMBER:
+					case GUILD_MEMBER:
+					case GUILD_JUNIOR_MEMBER:
+					case GUILD_INITIATE:
+					case GUILD_RECRUIT: {
+						emu_e->rank = GUILD_MEMBER_TI;
+						break;
+					}
+					case GUILD_OFFICER:
+					case GUILD_SENIOR_OFFICER: {
+						emu_e->rank = GUILD_OFFICER_TI;
+						break;
+					}
+					case GUILD_LEADER: {
+						emu_e->rank = GUILD_LEADER_TI;
+						break;
+					}
+					default: {
+						emu_e->rank = GUILD_RANK_NONE_TI;
+						break;
+					}
+				}
 				PutFieldN(rank);
 				PutFieldN(time_last_on);
 				PutFieldN(tribute_enable);
@@ -1161,53 +1268,142 @@ namespace UF
 
 	ENCODE(OP_GuildsList)
 	{
-		EQApplicationPacket *in = *p;
+		EQApplicationPacket* in = *p;
 		*p = nullptr;
 
-		uint32 NumberOfGuilds = in->size / 64;
-		uint32 PacketSize = 68;	// 64 x 0x00 + a uint32 that I am guessing is the highest guild ID in use.
+		GuildsListMessaging_Struct   glms{};
+		EQ::Util::MemoryStreamReader ss(reinterpret_cast<char *>(in->pBuffer), in->size);
+		cereal::BinaryInputArchive   ar(ss);
+		ar(glms);
 
-		unsigned char *__emu_buffer = in->pBuffer;
-		char *InBuffer = (char *)__emu_buffer;
-		uint32 HighestGuildID = 0;
+		auto packet_size = 64 + 4 + glms.guild_detail.size() * 4 + glms.string_length;
+		auto buffer      = new uchar[packet_size];
+		auto buf_pos     = buffer;
 
-		for (unsigned int i = 0; i < NumberOfGuilds; ++i)
-		{
-			if (InBuffer[0])
-			{
-				PacketSize += (5 + strlen(InBuffer));
-				HighestGuildID = i - 1;
+		memset(buf_pos, 0, 64);
+		buf_pos += 64;
+
+		VARSTRUCT_ENCODE_TYPE(uint32, buf_pos, glms.no_of_guilds);
+
+		for (auto const& g : glms.guild_detail) {
+			if (g.guild_id < UF::constants::MAX_GUILD_ID) {
+				VARSTRUCT_ENCODE_TYPE(uint32, buf_pos, g.guild_id);
+				strn0cpy((char *) buf_pos, g.guild_name.c_str(), g.guild_name.length() + 1);
+				buf_pos += g.guild_name.length() + 1;
 			}
-			InBuffer += 64;
 		}
 
-		PacketSize++;	// Appears to be an extra 0x00 at the very end.
-		in->size = PacketSize;
-		in->pBuffer = new unsigned char[in->size];
-		InBuffer = (char *)__emu_buffer;
-		char *OutBuffer = (char *)in->pBuffer;
+		auto outapp = new EQApplicationPacket(OP_GuildsList);
 
-		// Init the first 64 bytes to zero, as per live.
-		//
-		memset(OutBuffer, 0, 64);
-		OutBuffer += 64;
+		outapp->size    = packet_size;
+		outapp->pBuffer = buffer;
 
-		VARSTRUCT_ENCODE_TYPE(uint32, OutBuffer, HighestGuildID);
+		dest->FastQueuePacket(&outapp);
+	}
 
-		for (unsigned int i = 0; i < NumberOfGuilds; ++i)
-		{
-			if (InBuffer[0])
-			{
-				VARSTRUCT_ENCODE_TYPE(uint32, OutBuffer, i - 1);
-				VARSTRUCT_ENCODE_STRING(OutBuffer, InBuffer);
+	ENCODE(OP_GuildMemberAdd)
+	{
+		ENCODE_LENGTH_EXACT(GuildMemberAdd_Struct)
+		SETUP_DIRECT_ENCODE(GuildMemberAdd_Struct, structs::GuildMemberAdd_Struct)
+
+		OUT(guild_id)
+		OUT(level)
+		OUT(class_)
+		switch (emu->rank_) {
+			case GUILD_SENIOR_MEMBER:
+			case GUILD_MEMBER:
+			case GUILD_JUNIOR_MEMBER:
+			case GUILD_INITIATE:
+			case GUILD_RECRUIT: {
+				eq->rank_ = GUILD_MEMBER_TI;
+				break;
 			}
-			InBuffer += 64;
+			case GUILD_OFFICER:
+			case GUILD_SENIOR_OFFICER: {
+				eq->rank_ = GUILD_OFFICER_TI;
+				break;
+			}
+			case GUILD_LEADER: {
+				eq->rank_ = GUILD_LEADER_TI;
+				break;
+			}
+			default: {
+				eq->rank_ = GUILD_RANK_NONE_TI;
+				break;
+			}
 		}
+		OUT(zone_id)
+		OUT(last_on)
+		OUT_str(player_name)
 
-		VARSTRUCT_ENCODE_TYPE(uint8, OutBuffer, 0x00);
+		FINISH_ENCODE()
+	}
 
-		delete[] __emu_buffer;
-		dest->FastQueuePacket(&in, ack_req);
+	ENCODE(OP_GuildMemberRankAltBanker)
+	{
+		ENCODE_LENGTH_EXACT(GuildMemberRank_Struct)
+		SETUP_DIRECT_ENCODE(GuildMemberRank_Struct, structs::GuildMemberRank_Struct)
+
+		OUT(guild_id)
+		OUT(alt_banker)
+		OUT_str(player_name)
+
+		switch (emu->rank_) {
+			case GUILD_SENIOR_MEMBER:
+			case GUILD_MEMBER:
+			case GUILD_JUNIOR_MEMBER:
+			case GUILD_INITIATE:
+			case GUILD_RECRUIT: {
+				eq->rank_ = GUILD_MEMBER_TI;
+				break;
+			}
+			case GUILD_OFFICER:
+			case GUILD_SENIOR_OFFICER: {
+				eq->rank_ = GUILD_OFFICER_TI;
+				break;
+			}
+			case GUILD_LEADER: {
+				eq->rank_ = GUILD_LEADER_TI;
+				break;
+			}
+			default: {
+				eq->rank_ = GUILD_RANK_NONE_TI;
+				break;
+			}
+		}
+		FINISH_ENCODE()
+	}
+
+	ENCODE(OP_SendGuildTributes)
+	{
+		ENCODE_LENGTH_ATLEAST(structs::GuildTributeAbility_Struct)
+		SETUP_VAR_ENCODE(GuildTributeAbility_Struct)
+		ALLOC_VAR_ENCODE(structs::GuildTributeAbility_Struct, sizeof(GuildTributeAbility_Struct) + strlen(emu->ability.name))
+
+		eq->guild_id           = emu->guild_id;
+		eq->ability.tribute_id = emu->ability.tribute_id;
+		eq->ability.tier_count = emu->ability.tier_count;
+		strncpy(eq->ability.name, emu->ability.name, strlen(emu->ability.name));
+		for (int i = 0; i < ntohl(emu->ability.tier_count); i++) {
+			eq->ability.tiers[i].cost            = emu->ability.tiers[i].cost;
+			eq->ability.tiers[i].level           = emu->ability.tiers[i].level;
+			eq->ability.tiers[i].tribute_item_id = emu->ability.tiers[i].tribute_item_id;
+		}
+		FINISH_ENCODE()
+	}
+
+	ENCODE(OP_GuildTributeDonateItem)
+	{
+		SETUP_DIRECT_ENCODE(GuildTributeDonateItemReply_Struct, structs::GuildTributeDonateItemReply_Struct);
+
+		Log(Logs::Detail, Logs::Netcode, "UF::ENCODE(OP_GuildTributeDonateItem)");
+
+		OUT(quantity)
+		OUT(favor)
+		eq->unknown8 = 0;
+		eq->slot     = ServerToUFSlot(emu->slot);
+
+		FINISH_ENCODE()
 	}
 
 	ENCODE(OP_Illusion)
@@ -1272,23 +1468,23 @@ namespace UF
 		//store away the emu struct
 		uchar* __emu_buffer = in->pBuffer;
 
-		EQEmu::InternalSerializedItem_Struct* int_struct = (EQEmu::InternalSerializedItem_Struct*)(&__emu_buffer[4]);
+		EQ::InternalSerializedItem_Struct* int_struct = (EQ::InternalSerializedItem_Struct*)(&__emu_buffer[4]);
 
-		EQEmu::OutBuffer ob;
-		EQEmu::OutBuffer::pos_type last_pos = ob.tellp();
+		EQ::OutBuffer ob;
+		EQ::OutBuffer::pos_type last_pos = ob.tellp();
 
 		ob.write((const char*)__emu_buffer, 4);
 
-		SerializeItem(ob, (const EQEmu::ItemInstance*)int_struct->inst, int_struct->slot_id, 0);
+		SerializeItem(ob, (const EQ::ItemInstance*)int_struct->inst, int_struct->slot_id, 0);
 		if (ob.tellp() == last_pos) {
-			Log.Out(Logs::General, Logs::Netcode, "[STRUCTS] Serialization failed on item slot %d.", int_struct->slot_id);
+			LogNetcode("UF::ENCODE(OP_ItemPacket) Serialization failed on item slot [{}]", int_struct->slot_id);
 			delete in;
 			return;
 		}
 
 		in->size = ob.size();
 		in->pBuffer = ob.detach();
-		
+
 		delete[] __emu_buffer;
 
 		dest->FastQueuePacket(&in, ack_req);
@@ -1354,24 +1550,12 @@ namespace UF
 		ENCODE_LENGTH_EXACT(LootingItem_Struct);
 		SETUP_DIRECT_ENCODE(LootingItem_Struct, structs::LootingItem_Struct);
 
+		Log(Logs::Detail, Logs::Netcode, "UF::ENCODE(OP_LootItem)");
+
 		OUT(lootee);
 		OUT(looter);
 		eq->slot_id = ServerToUFCorpseSlot(emu->slot_id);
 		OUT(auto_loot);
-
-		FINISH_ENCODE();
-	}
-
-	ENCODE(OP_ManaChange)
-	{
-		ENCODE_LENGTH_EXACT(ManaChange_Struct);
-		SETUP_DIRECT_ENCODE(ManaChange_Struct, structs::ManaChange_Struct);
-
-		OUT(new_mana);
-		OUT(stamina);
-		OUT(spell_id);
-		OUT(keepcasting);
-		eq->slot = -1; // this is spell gem slot. It's -1 in normal operation
 
 		FINISH_ENCODE();
 	}
@@ -1519,6 +1703,8 @@ namespace UF
 		ENCODE_LENGTH_EXACT(MoveItem_Struct);
 		SETUP_DIRECT_ENCODE(MoveItem_Struct, structs::MoveItem_Struct);
 
+		Log(Logs::Detail, Logs::Netcode, "UF::ENCODE(OP_MoveItem)");
+
 		eq->from_slot = ServerToUFSlot(emu->from_slot);
 		eq->to_slot = ServerToUFSlot(emu->to_slot);
 		OUT(number_in_stack);
@@ -1573,15 +1759,19 @@ namespace UF
 		OUT_str(zone_short_name2);
 		OUT(zone_id);
 		OUT(zone_instance);
-		OUT(SuspendBuffs);
+		OUT(suspend_buffs);
+		OUT(fast_regen_hp);
+		OUT(fast_regen_mana);
+		OUT(fast_regen_endurance);
+		OUT(underworld_teleport_index);
 
-		eq->FogDensity = emu->fog_density;
+		eq->fog_density = emu->fog_density;
 
 		/*fill in some unknowns with observed values, hopefully it will help */
 		eq->unknown800 = -1;
 		eq->unknown844 = 600;
-		eq->unknown880 = 50;
-		eq->unknown884 = 10;
+		OUT(lava_damage);
+		OUT(min_lava_damage);
 		eq->unknown888 = 1;
 		eq->unknown889 = 0;
 		eq->unknown890 = 1;
@@ -1590,9 +1780,6 @@ namespace UF
 		eq->unknown893 = 0;
 		eq->fall_damage = 0;	// 0 = Fall Damage on, 1 = Fall Damage off
 		eq->unknown895 = 0;
-		eq->unknown896 = 180;
-		eq->unknown900 = 180;
-		eq->unknown904 = 180;
 		eq->unknown908 = 2;
 		eq->unknown912 = 2;
 
@@ -1607,6 +1794,7 @@ namespace UF
 		memcpy(eq->Title, emu->Title, sizeof(eq->Title));
 		memcpy(eq->Text, emu->Text, sizeof(eq->Text));
 		OUT(Buttons);
+		OUT(SoundControls);
 		OUT(Duration);
 		OUT(PopupID);
 		OUT(NegativeID);
@@ -1615,117 +1803,6 @@ namespace UF
 		OUT_str(ButtonName1);
 
 		FINISH_ENCODE();
-	}
-
-	ENCODE(OP_OpenNewTasksWindow)
-	{
-		AvailableTaskHeader_Struct*	__emu_AvailableTaskHeader;
-		AvailableTaskData1_Struct* 	__emu_AvailableTaskData1;
-		AvailableTaskData2_Struct* 	__emu_AvailableTaskData2;
-		AvailableTaskTrailer_Struct* 	__emu_AvailableTaskTrailer;
-
-		structs::AvailableTaskHeader_Struct*	__eq_AvailableTaskHeader;
-		structs::AvailableTaskData1_Struct* 	__eq_AvailableTaskData1;
-		structs::AvailableTaskData2_Struct* 	__eq_AvailableTaskData2;
-		structs::AvailableTaskTrailer_Struct* 	__eq_AvailableTaskTrailer;
-
-		EQApplicationPacket *in = *p;
-		*p = nullptr;
-
-		unsigned char *__emu_buffer = in->pBuffer;
-
-		__emu_AvailableTaskHeader = (AvailableTaskHeader_Struct*)__emu_buffer;
-
-		// For each task, SoF has an extra uint32 and what appears to be space for a null terminated string.
-		//
-		in->size = in->size + (__emu_AvailableTaskHeader->TaskCount * 5);
-		in->pBuffer = new unsigned char[in->size];
-
-		unsigned char *__eq_buffer = in->pBuffer;
-
-		__eq_AvailableTaskHeader = (structs::AvailableTaskHeader_Struct*)__eq_buffer;
-
-		char *__eq_ptr, *__emu_Ptr;
-
-		// Copy Header
-		//
-		//
-
-		__eq_AvailableTaskHeader->TaskCount = __emu_AvailableTaskHeader->TaskCount;
-		__eq_AvailableTaskHeader->unknown1 = __emu_AvailableTaskHeader->unknown1;
-		__eq_AvailableTaskHeader->TaskGiver = __emu_AvailableTaskHeader->TaskGiver;
-
-		__emu_Ptr = (char *)__emu_AvailableTaskHeader + sizeof(AvailableTaskHeader_Struct);
-		__eq_ptr = (char *)__eq_AvailableTaskHeader + sizeof(structs::AvailableTaskHeader_Struct);
-
-		for (uint32 i = 0; i<__emu_AvailableTaskHeader->TaskCount; i++) {
-
-			__emu_AvailableTaskData1 = (AvailableTaskData1_Struct*)__emu_Ptr;
-			__eq_AvailableTaskData1 = (structs::AvailableTaskData1_Struct*)__eq_ptr;
-
-			__eq_AvailableTaskData1->TaskID = __emu_AvailableTaskData1->TaskID;
-			// This next unknown seems to affect the colour of the task title. 0x3f80000 is what I have seen
-			// in Underfoot packets. Changing it to 0x3f000000 makes the title red.
-			__eq_AvailableTaskData1->unknown1 = 0x3f800000;
-			__eq_AvailableTaskData1->TimeLimit = __emu_AvailableTaskData1->TimeLimit;
-			__eq_AvailableTaskData1->unknown2 = __emu_AvailableTaskData1->unknown2;
-
-			__emu_Ptr += sizeof(AvailableTaskData1_Struct);
-			__eq_ptr += sizeof(structs::AvailableTaskData1_Struct);
-
-			strcpy(__eq_ptr, __emu_Ptr); // Title
-
-			__emu_Ptr += strlen(__emu_Ptr) + 1;
-			__eq_ptr += strlen(__eq_ptr) + 1;
-
-			strcpy(__eq_ptr, __emu_Ptr); // Description
-
-			__emu_Ptr += strlen(__emu_Ptr) + 1;
-			__eq_ptr += strlen(__eq_ptr) + 1;
-
-			__eq_ptr[0] = 0;
-			__eq_ptr += strlen(__eq_ptr) + 1;
-
-			__emu_AvailableTaskData2 = (AvailableTaskData2_Struct*)__emu_Ptr;
-			__eq_AvailableTaskData2 = (structs::AvailableTaskData2_Struct*)__eq_ptr;
-
-			__eq_AvailableTaskData2->unknown1 = __emu_AvailableTaskData2->unknown1;
-			__eq_AvailableTaskData2->unknown2 = __emu_AvailableTaskData2->unknown2;
-			__eq_AvailableTaskData2->unknown3 = __emu_AvailableTaskData2->unknown3;
-			__eq_AvailableTaskData2->unknown4 = __emu_AvailableTaskData2->unknown4;
-
-			__emu_Ptr += sizeof(AvailableTaskData2_Struct);
-			__eq_ptr += sizeof(structs::AvailableTaskData2_Struct);
-
-			strcpy(__eq_ptr, __emu_Ptr); // Unknown string
-
-			__emu_Ptr += strlen(__emu_Ptr) + 1;
-			__eq_ptr += strlen(__eq_ptr) + 1;
-
-			strcpy(__eq_ptr, __emu_Ptr); // Unknown string
-
-			__emu_Ptr += strlen(__emu_Ptr) + 1;
-			__eq_ptr += strlen(__eq_ptr) + 1;
-
-			__emu_AvailableTaskTrailer = (AvailableTaskTrailer_Struct*)__emu_Ptr;
-			__eq_AvailableTaskTrailer = (structs::AvailableTaskTrailer_Struct*)__eq_ptr;
-
-			__eq_AvailableTaskTrailer->ItemCount = __emu_AvailableTaskTrailer->ItemCount;
-			__eq_AvailableTaskTrailer->unknown1 = __emu_AvailableTaskTrailer->unknown1;
-			__eq_AvailableTaskTrailer->unknown2 = __emu_AvailableTaskTrailer->unknown2;
-			__eq_AvailableTaskTrailer->StartZone = __emu_AvailableTaskTrailer->StartZone;
-
-			__emu_Ptr += sizeof(AvailableTaskTrailer_Struct);
-			__eq_ptr += sizeof(structs::AvailableTaskTrailer_Struct);
-
-			strcpy(__eq_ptr, __emu_Ptr); // Unknown string
-
-			__emu_Ptr += strlen(__emu_Ptr) + 1;
-			__eq_ptr += strlen(__eq_ptr) + 1;
-		}
-
-		delete[] __emu_buffer;
-		dest->FastQueuePacket(&in, ack_req);
 	}
 
 	ENCODE(OP_PetBuffWindow)
@@ -1784,7 +1861,7 @@ namespace UF
 		eq->level1 = emu->level;
 		//	OUT(unknown00022[2]);
 		for (r = 0; r < 5; r++) {
-			OUT(binds[r].zoneId);
+			OUT(binds[r].zone_id);
 			OUT(binds[r].x);
 			OUT(binds[r].y);
 			OUT(binds[r].z);
@@ -1792,7 +1869,7 @@ namespace UF
 		}
 		OUT(deity);
 		OUT(intoxication);
-		OUT_array(spellSlotRefresh, structs::MAX_PP_MEMSPELL);
+		OUT_array(spellSlotRefresh, spells::SPELL_GEM_COUNT);
 		OUT(abilitySlotRefresh);
 		OUT(points); // Relocation Test
 		//	OUT(unknown0166[4]);
@@ -1803,7 +1880,7 @@ namespace UF
 		OUT(hairstyle);
 		OUT(beard);
 		//	OUT(unknown00178[10]);
-		for (r = EQEmu::textures::textureBegin; r < EQEmu::textures::materialCount; r++) {
+		for (r = EQ::textures::textureBegin; r < EQ::textures::materialCount; r++) {
 			eq->equipment.Slot[r].Material = emu->item_material.Slot[r].Material;
 			eq->equipment.Slot[r].Unknown1 = 0;
 			eq->equipment.Slot[r].EliteMaterial = 0;
@@ -1834,10 +1911,28 @@ namespace UF
 		OUT(WIS);
 		OUT(face);
 		//	OUT(unknown02264[47]);
-		memset(eq->spell_book, 0xFF, sizeof(uint32)* structs::MAX_PP_SPELLBOOK);
-		OUT_array(spell_book, 480U);
+
+		if (spells::SPELLBOOK_SIZE <= EQ::spells::SPELLBOOK_SIZE) {
+			for (uint32 r = 0; r < spells::SPELLBOOK_SIZE; r++) {
+				if (emu->spell_book[r] <= spells::SPELL_ID_MAX)
+					eq->spell_book[r] = emu->spell_book[r];
+				else
+					eq->spell_book[r] = 0xFFFFFFFFU;
+			}
+		}
+		else {
+			for (uint32 r = 0; r < EQ::spells::SPELLBOOK_SIZE; r++) {
+				if (emu->spell_book[r] <= spells::SPELL_ID_MAX)
+					eq->spell_book[r] = emu->spell_book[r];
+				else
+					eq->spell_book[r] = 0xFFFFFFFFU;
+			}
+			// invalidate the rest of the spellbook slots
+			memset(&eq->spell_book[EQ::spells::SPELLBOOK_SIZE], 0xFF, (sizeof(uint32) * (spells::SPELLBOOK_SIZE - EQ::spells::SPELLBOOK_SIZE)));
+		}
+
 		//	OUT(unknown4184[128]);
-		OUT_array(mem_spells, structs::MAX_PP_MEMSPELL);
+		OUT_array(mem_spells, spells::SPELL_GEM_COUNT);
 		//	OUT(unknown04396[32]);
 		OUT(platinum);
 		OUT(gold);
@@ -1849,6 +1944,7 @@ namespace UF
 		OUT(copper_cursor);
 
 		OUT_array(skills, structs::MAX_PP_SKILL);	// 1:1 direct copy (100 dword)
+		OUT_array(InnateSkills, structs::MAX_PP_INNATE_SKILL);  // 1:1 direct copy (25 dword)
 
 		//	OUT(unknown04760[236]);
 		OUT(toxicity);
@@ -1887,19 +1983,19 @@ namespace UF
 
 		//	OUT(unknown06160[4]);
 
-		// Copy bandoliers where server and client indexes converge
-		for (r = 0; r < EQEmu::legacy::BANDOLIERS_SIZE && r < profile::BandoliersSize; ++r) {
+		// Copy bandoliers where server and client indices converge
+		for (r = 0; r < EQ::profile::BANDOLIERS_SIZE && r < profile::BANDOLIERS_SIZE; ++r) {
 			OUT_str(bandoliers[r].Name);
-			for (uint32 k = 0; k < profile::BandolierItemCount; ++k) { // Will need adjusting if 'server != client' is ever true
+			for (uint32 k = 0; k < profile::BANDOLIER_ITEM_COUNT; ++k) { // Will need adjusting if 'server != client' is ever true
 				OUT(bandoliers[r].Items[k].ID);
 				OUT(bandoliers[r].Items[k].Icon);
 				OUT_str(bandoliers[r].Items[k].Name);
 			}
 		}
-		// Nullify bandoliers where server and client indexes diverge, with a client bias
-		for (r = EQEmu::legacy::BANDOLIERS_SIZE; r < profile::BandoliersSize; ++r) {
+		// Nullify bandoliers where server and client indices diverge, with a client bias
+		for (r = EQ::profile::BANDOLIERS_SIZE; r < profile::BANDOLIERS_SIZE; ++r) {
 			eq->bandoliers[r].Name[0] = '\0';
-			for (uint32 k = 0; k < profile::BandolierItemCount; ++k) { // Will need adjusting if 'server != client' is ever true
+			for (uint32 k = 0; k < profile::BANDOLIER_ITEM_COUNT; ++k) { // Will need adjusting if 'server != client' is ever true
 				eq->bandoliers[r].Items[k].ID = 0;
 				eq->bandoliers[r].Items[k].Icon = 0;
 				eq->bandoliers[r].Items[k].Name[0] = '\0';
@@ -1908,14 +2004,14 @@ namespace UF
 
 		//	OUT(unknown07444[5120]);
 
-		// Copy potion belt where server and client indexes converge
-		for (r = 0; r < EQEmu::legacy::POTION_BELT_ITEM_COUNT && r < profile::PotionBeltSize; ++r) {
+		// Copy potion belt where server and client indices converge
+		for (r = 0; r < EQ::profile::POTION_BELT_SIZE && r < profile::POTION_BELT_SIZE; ++r) {
 			OUT(potionbelt.Items[r].ID);
 			OUT(potionbelt.Items[r].Icon);
 			OUT_str(potionbelt.Items[r].Name);
 		}
-		// Nullify potion belt where server and client indexes diverge, with a client bias
-		for (r = EQEmu::legacy::POTION_BELT_ITEM_COUNT; r < profile::PotionBeltSize; ++r) {
+		// Nullify potion belt where server and client indices diverge, with a client bias
+		for (r = EQ::profile::POTION_BELT_SIZE; r < profile::POTION_BELT_SIZE; ++r) {
 			eq->potionbelt.Items[r].ID = 0;
 			eq->potionbelt.Items[r].Icon = 0;
 			eq->potionbelt.Items[r].Name[0] = '\0';
@@ -1933,6 +2029,30 @@ namespace UF
 		OUT(pvp);
 		OUT(anon);
 		OUT(gm);
+		//Translate older ranks to new values* /
+		switch (emu->guildrank) {
+			case GUILD_SENIOR_MEMBER:
+			case GUILD_MEMBER:
+			case GUILD_JUNIOR_MEMBER:
+			case GUILD_INITIATE:
+			case GUILD_RECRUIT: {
+				emu->guildrank = GUILD_MEMBER_TI;
+				break;
+			}
+			case GUILD_OFFICER:
+			case GUILD_SENIOR_OFFICER: {
+				emu->guildrank = GUILD_OFFICER_TI;
+				break;
+			}
+			case GUILD_LEADER: {
+				emu->guildrank = GUILD_LEADER_TI;
+				break;
+			}
+			default: {
+				emu->guildrank = GUILD_RANK_NONE_TI;
+				break;
+			}
+		}
 		OUT(guildrank);
 		OUT(guildbanker);
 		//	OUT(unknown13054[12]);
@@ -2036,88 +2156,124 @@ namespace UF
 
 	ENCODE(OP_RaidJoin)
 	{
-		EQApplicationPacket *inapp = *p;
-		unsigned char * __emu_buffer = inapp->pBuffer;
-		RaidCreate_Struct *raid_create = (RaidCreate_Struct*)__emu_buffer;
+		EQApplicationPacket* inapp = *p;
+		*p = nullptr;
+		unsigned char* __emu_buffer = inapp->pBuffer;
+		RaidCreate_Struct* emu = (RaidCreate_Struct*)__emu_buffer;
 
-		auto outapp_create = new EQApplicationPacket(OP_RaidUpdate, sizeof(structs::RaidGeneral_Struct));
-		structs::RaidGeneral_Struct *general = (structs::RaidGeneral_Struct*)outapp_create->pBuffer;
+		auto outapp = new EQApplicationPacket(OP_RaidUpdate, sizeof(structs::RaidGeneral_Struct));
+		structs::RaidGeneral_Struct* general = (structs::RaidGeneral_Struct*)outapp->pBuffer;
 
-		general->action = 8;
-		general->parameter = 1;
-		strn0cpy(general->leader_name, raid_create->leader_name, 64);
-		strn0cpy(general->player_name, raid_create->leader_name, 64);
+		general->action = raidCreate;
+		general->parameter = RaidCommandAcceptInvite;
+		strn0cpy(general->leader_name, emu->leader_name, sizeof(emu->leader_name));
+		strn0cpy(general->player_name, emu->leader_name, sizeof(emu->leader_name));
 
-		dest->FastQueuePacket(&outapp_create);
+		dest->FastQueuePacket(&outapp);
+
 		safe_delete(inapp);
+
 	}
 
 	ENCODE(OP_RaidUpdate)
 	{
-		EQApplicationPacket *inapp = *p;
+		EQApplicationPacket* inapp = *p;
 		*p = nullptr;
-		unsigned char * __emu_buffer = inapp->pBuffer;
-		RaidGeneral_Struct *raid_gen = (RaidGeneral_Struct*)__emu_buffer;
+		unsigned char* __emu_buffer = inapp->pBuffer;
+		RaidGeneral_Struct* raid_gen = (RaidGeneral_Struct*)__emu_buffer;
 
-		if (raid_gen->action == 0) // raid add has longer length than other raid updates
+		switch (raid_gen->action)
 		{
-			RaidAddMember_Struct* in_add_member = (RaidAddMember_Struct*)__emu_buffer;
+		case raidAdd:
+		{
+			RaidAddMember_Struct* emu = (RaidAddMember_Struct*)__emu_buffer;
 
 			auto outapp = new EQApplicationPacket(OP_RaidUpdate, sizeof(structs::RaidAddMember_Struct));
-			structs::RaidAddMember_Struct *add_member = (structs::RaidAddMember_Struct*)outapp->pBuffer;
+			structs::RaidAddMember_Struct* eq = (structs::RaidAddMember_Struct*)outapp->pBuffer;
 
-			add_member->raidGen.action = in_add_member->raidGen.action;
-			add_member->raidGen.parameter = in_add_member->raidGen.parameter;
-			strn0cpy(add_member->raidGen.leader_name, in_add_member->raidGen.leader_name, 64);
-			strn0cpy(add_member->raidGen.player_name, in_add_member->raidGen.player_name, 64);
-			add_member->_class = in_add_member->_class;
-			add_member->level = in_add_member->level;
-			add_member->isGroupLeader = in_add_member->isGroupLeader;
-			add_member->flags[0] = in_add_member->flags[0];
-			add_member->flags[1] = in_add_member->flags[1];
-			add_member->flags[2] = in_add_member->flags[2];
-			add_member->flags[3] = in_add_member->flags[3];
-			add_member->flags[4] = in_add_member->flags[4];
-			dest->FastQueuePacket(&outapp);
-		}
-		else if (raid_gen->action == 35)
-		{
-			RaidMOTD_Struct *inmotd = (RaidMOTD_Struct *)__emu_buffer;
-			auto outapp = new EQApplicationPacket(OP_RaidUpdate, sizeof(structs::RaidMOTD_Struct) +
-										 strlen(inmotd->motd) + 1);
-			structs::RaidMOTD_Struct *outmotd = (structs::RaidMOTD_Struct *)outapp->pBuffer;
+			OUT(raidGen.action);
+			OUT(raidGen.parameter);
+			OUT_str(raidGen.leader_name);
+			OUT_str(raidGen.player_name);
+			OUT(_class);
+			OUT(level);
+			OUT(isGroupLeader);
+			OUT(flags[0]);
+			OUT(flags[1]);
+			OUT(flags[2]);
+			OUT(flags[3]);
+			OUT(flags[4]);
 
-			outmotd->general.action = inmotd->general.action;
-			strn0cpy(outmotd->general.player_name, inmotd->general.player_name, 64);
-			strn0cpy(outmotd->motd, inmotd->motd, strlen(inmotd->motd) + 1);
 			dest->FastQueuePacket(&outapp);
+			break;
 		}
-		else if (raid_gen->action == 14 || raid_gen->action == 30)
+		case raidSetMotd:
 		{
-			RaidLeadershipUpdate_Struct *inlaa = (RaidLeadershipUpdate_Struct *)__emu_buffer;
-			auto outapp =
-			    new EQApplicationPacket(OP_RaidUpdate, sizeof(structs::RaidLeadershipUpdate_Struct));
-			structs::RaidLeadershipUpdate_Struct *outlaa = (structs::RaidLeadershipUpdate_Struct *)outapp->pBuffer;
+			RaidMOTD_Struct* emu = (RaidMOTD_Struct*)__emu_buffer;
 
-			outlaa->action = inlaa->action;
-			strn0cpy(outlaa->player_name, inlaa->player_name, 64);
-			strn0cpy(outlaa->leader_name, inlaa->leader_name, 64);
-			memcpy(&outlaa->raid, &inlaa->raid, sizeof(RaidLeadershipAA_Struct));
+			auto outapp = new EQApplicationPacket(OP_RaidUpdate, sizeof(structs::RaidMOTD_Struct));
+			structs::RaidMOTD_Struct* eq = (structs::RaidMOTD_Struct*)outapp->pBuffer;
+
+			OUT(general.action);
+			OUT_str(general.player_name);
+			OUT_str(general.leader_name);
+			OUT_str(motd);
+
 			dest->FastQueuePacket(&outapp);
+			break;
 		}
-		else
+		case raidSetLeaderAbilities:
+		case raidMakeLeader:
 		{
-			RaidGeneral_Struct* in_raid_general = (RaidGeneral_Struct*)__emu_buffer;
+			RaidLeadershipUpdate_Struct* emu = (RaidLeadershipUpdate_Struct*)__emu_buffer;
+
+			auto outapp = new EQApplicationPacket(OP_RaidUpdate, sizeof(structs::RaidLeadershipUpdate_Struct));
+			structs::RaidLeadershipUpdate_Struct* eq = (structs::RaidLeadershipUpdate_Struct*)outapp->pBuffer;
+
+			OUT(action);
+			OUT_str(player_name);
+			OUT_str(leader_name);
+			memcpy(&eq->raid, &emu->raid, sizeof(RaidLeadershipAA_Struct));
+
+			dest->FastQueuePacket(&outapp);
+			break;
+		}
+		case raidSetNote:
+		{
+			auto emu = (RaidNote_Struct*)__emu_buffer;
+
+			auto outapp = new EQApplicationPacket(OP_RaidUpdate, sizeof(structs::RaidNote_Struct));
+			auto eq = (structs::RaidNote_Struct*)outapp->pBuffer;
+
+			OUT(general.action);
+			OUT_str(general.leader_name);
+			OUT_str(general.player_name);
+			OUT_str(note);
+
+			dest->FastQueuePacket(&outapp);
+			break;
+		}
+		case raidNoRaid:
+		{
+			dest->QueuePacket(inapp);
+			break;
+		}
+		default:
+		{
+			RaidGeneral_Struct* emu = (RaidGeneral_Struct*)__emu_buffer;
 
 			auto outapp = new EQApplicationPacket(OP_RaidUpdate, sizeof(structs::RaidGeneral_Struct));
-			structs::RaidGeneral_Struct *raid_general = (structs::RaidGeneral_Struct*)outapp->pBuffer;
-			strn0cpy(raid_general->leader_name, in_raid_general->leader_name, 64);
-			strn0cpy(raid_general->player_name, in_raid_general->player_name, 64);
-			raid_general->action = in_raid_general->action;
-			raid_general->parameter = in_raid_general->parameter;
-			dest->FastQueuePacket(&outapp);
-		}
+			structs::RaidGeneral_Struct* eq = (structs::RaidGeneral_Struct*)outapp->pBuffer;
 
+			OUT(action);
+			OUT(parameter);
+			OUT_str(leader_name);
+			OUT_str(player_name);
+
+			dest->FastQueuePacket(&outapp);
+			break;
+		}
+		}
 		safe_delete(inapp);
 	}
 
@@ -2132,6 +2288,9 @@ namespace UF
 			eq->window = emu->window;
 		OUT(type);
 		eq->invslot = ServerToUFSlot(emu->invslot);
+		OUT(target_id);
+		OUT(can_cast);
+		OUT(can_scribe);
 		strn0cpy(eq->txtfile, emu->booktext, sizeof(eq->txtfile));
 
 		FINISH_ENCODE();
@@ -2196,11 +2355,11 @@ namespace UF
 		eq->aa_expansion = emu->expansion;
 		eq->special_category = emu->category;
 		eq->total_abilities = emu->total_effects;
-		
+
 		for(auto i = 0; i < eq->total_abilities; ++i) {
 			eq->abilities[i].skill_id = inapp->ReadUInt32();
-			eq->abilities[i].base1 = inapp->ReadUInt32();
-			eq->abilities[i].base2 = inapp->ReadUInt32();
+			eq->abilities[i].base_value = inapp->ReadUInt32();
+			eq->abilities[i].limit_value = inapp->ReadUInt32();
 			eq->abilities[i].slot = inapp->ReadUInt32();
 		}
 
@@ -2224,8 +2383,8 @@ namespace UF
 			eq->CharCount = emu->CharCount;
 			eq->TotalChars = emu->TotalChars;
 
-			if (eq->TotalChars > constants::CharacterCreationLimit)
-				eq->TotalChars = constants::CharacterCreationLimit;
+			if (eq->TotalChars > constants::CHARACTER_CREATION_LIMIT)
+				eq->TotalChars = constants::CHARACTER_CREATION_LIMIT;
 
 			// Special Underfoot adjustment - field should really be 'AdditionalChars' or 'BonusChars'
 			uint32 adjusted_total = eq->TotalChars - 8; // Yes, it rolls under for '< 8' - probably an int32 field
@@ -2241,7 +2400,7 @@ namespace UF
 
 		size_t names_length = 0;
 		size_t character_count = 0;
-		for (; character_count < emu->CharCount && character_count < constants::CharacterCreationLimit; ++character_count) {
+		for (; character_count < emu->CharCount && character_count < constants::CHARACTER_CREATION_LIMIT; ++character_count) {
 			emu_cse = (CharacterSelectEntry_Struct *)emu_ptr;
 			names_length += strlen(emu_cse->Name);
 			emu_ptr += sizeof(CharacterSelectEntry_Struct);
@@ -2257,8 +2416,8 @@ namespace UF
 		eq->CharCount = character_count;
 		eq->TotalChars = emu->TotalChars;
 
-		if (eq->TotalChars > constants::CharacterCreationLimit)
-			eq->TotalChars = constants::CharacterCreationLimit;
+		if (eq->TotalChars > constants::CHARACTER_CREATION_LIMIT)
+			eq->TotalChars = constants::CHARACTER_CREATION_LIMIT;
 
 		// Special Underfoot adjustment - field should really be 'AdditionalChars' or 'BonusChars' in this client
 		uint32 adjusted_total = eq->TotalChars - 8; // Yes, it rolls under for '< 8' - probably an int32 field
@@ -2287,7 +2446,7 @@ namespace UF
 			eq_cse->HairColor = emu_cse->HairColor;
 			eq_cse->Face = emu_cse->Face;
 
-			for (int equip_index = EQEmu::textures::textureBegin; equip_index < EQEmu::textures::materialCount; equip_index++) {
+			for (int equip_index = EQ::textures::textureBegin; equip_index < EQ::textures::materialCount; equip_index++) {
 				eq_cse->Equip[equip_index].Material = emu_cse->Equip[equip_index].Material;
 				eq_cse->Equip[equip_index].Unknown1 = emu_cse->Equip[equip_index].Unknown1;
 				eq_cse->Equip[equip_index].EliteMaterial = emu_cse->Equip[equip_index].EliteModel;
@@ -2365,6 +2524,19 @@ namespace UF
 		FINISH_ENCODE();
 	}
 
+	ENCODE(OP_ShopRequest)
+	{
+		ENCODE_LENGTH_EXACT(MerchantClick_Struct);
+		SETUP_DIRECT_ENCODE(MerchantClick_Struct, structs::MerchantClick_Struct);
+
+		OUT(npc_id);
+		OUT(player_id);
+		OUT(command);
+		OUT(rate);
+
+		FINISH_ENCODE();
+	}
+
 	ENCODE(OP_SomeItemPacketMaybe)
 	{
 		// This Opcode is not named very well. It is used for the animation of arrows leaving the player's bow
@@ -2397,29 +2569,88 @@ namespace UF
 
 	ENCODE(OP_SpawnAppearance)
 	{
-		EQApplicationPacket *in = *p;
-		*p = nullptr;
+		ENCODE_LENGTH_EXACT(SpawnAppearance_Struct);
+		SETUP_DIRECT_ENCODE(SpawnAppearance_Struct, structs::SpawnAppearance_Struct);
 
-		unsigned char *emu_buffer = in->pBuffer;
-
-		SpawnAppearance_Struct *sas = (SpawnAppearance_Struct *)emu_buffer;
-
-		if (sas->type != AT_Size)
-		{
-			dest->FastQueuePacket(&in, ack_req);
-			return;
+		OUT(spawn_id);
+		OUT(type);
+		OUT(parameter);
+		switch (emu->type) {
+			case AppearanceType::GuildRank: {
+				//Translate new ranks to old values* /
+				switch (emu->parameter) {
+					case GUILD_SENIOR_MEMBER:
+					case GUILD_MEMBER:
+					case GUILD_JUNIOR_MEMBER:
+					case GUILD_INITIATE:
+					case GUILD_RECRUIT: {
+						eq->parameter = GUILD_MEMBER_TI;
+						break;
+					}
+					case GUILD_OFFICER:
+					case GUILD_SENIOR_OFFICER: {
+						eq->parameter = GUILD_OFFICER_TI;
+						break;
+					}
+					case GUILD_LEADER: {
+						eq->parameter = GUILD_LEADER_TI;
+						break;
+					}
+					default: {
+						eq->parameter = GUILD_RANK_NONE_TI;
+						break;
+					}
+				}
+				break;
+			}
+			case AppearanceType::GuildShow: {
+				FAIL_ENCODE();
+				return;
+			}
+			default: {
+				break;
+			}
 		}
 
-		auto outapp = new EQApplicationPacket(OP_ChangeSize, sizeof(ChangeSize_Struct));
-		ChangeSize_Struct *css = (ChangeSize_Struct *)outapp->pBuffer;
+		FINISH_ENCODE();
+	}
 
-		css->EntityID = sas->spawn_id;
-		css->Size = (float)sas->parameter;
-		css->Unknown08 = 0;
-		css->Unknown12 = 1.0f;
+	ENCODE(OP_SetGuildRank)
+	{
+		ENCODE_LENGTH_EXACT(GuildSetRank_Struct);
+		SETUP_DIRECT_ENCODE(GuildSetRank_Struct, structs::GuildSetRank_Struct);
 
-		dest->FastQueuePacket(&outapp, ack_req);
-		delete in;
+		eq->unknown00 = 0;
+		eq->unknown04 = 0;
+
+		switch (emu->rank) {
+			case GUILD_SENIOR_MEMBER:
+			case GUILD_MEMBER:
+			case GUILD_JUNIOR_MEMBER:
+			case GUILD_INITIATE:
+			case GUILD_RECRUIT: {
+				emu->rank = GUILD_MEMBER_TI;
+				break;
+			}
+			case GUILD_OFFICER:
+			case GUILD_SENIOR_OFFICER: {
+				emu->rank = GUILD_OFFICER_TI;
+				break;
+			}
+			case GUILD_LEADER: {
+				emu->rank = GUILD_LEADER_TI;
+				break;
+			}
+			default: {
+				emu->rank = GUILD_RANK_NONE_TI;
+				break;
+			}
+		}
+
+		memcpy(eq->member_name, emu->member_name, sizeof(eq->member_name));
+		OUT(banker);
+
+		FINISH_ENCODE();
 	}
 
 	ENCODE(OP_SpawnDoor)
@@ -2460,47 +2691,35 @@ namespace UF
 		EQApplicationPacket *in = *p;
 		*p = nullptr;
 
-		SpecialMesg_Struct *emu = (SpecialMesg_Struct *)in->pBuffer;
+		SerializeBuffer buf(in->size);
+		buf.WriteInt8(in->ReadUInt8()); // speak mode
+		buf.WriteInt8(in->ReadUInt8()); // journal mode
+		buf.WriteInt8(in->ReadUInt8()); // language
+		buf.WriteInt32(in->ReadUInt32()); // message type
+		buf.WriteInt32(in->ReadUInt32()); // target spawn id
 
-		unsigned char *__emu_buffer = in->pBuffer;
+		std::string name;
+		in->ReadString(name); // NPC names max out at 63 chars
 
-		std::string old_message = &emu->message[strlen(emu->sayer)];
+		buf.WriteString(name);
+
+		buf.WriteInt32(in->ReadUInt32()); // loc
+		buf.WriteInt32(in->ReadUInt32());
+		buf.WriteInt32(in->ReadUInt32());
+
+		std::string old_message;
 		std::string new_message;
 
-		ServerToUFTextLink(new_message, old_message);
+		in->ReadString(old_message);
 
-		//in->size = 3 + 4 + 4 + strlen(emu->sayer) + 1 + 12 + new_message.length() + 1;
-		in->size = strlen(emu->sayer) + new_message.length() + 25;
-		in->pBuffer = new unsigned char[in->size];
+		ServerToUFSayLink(new_message, old_message);
 
-		char *OutBuffer = (char *)in->pBuffer;
+		buf.WriteString(new_message);
 
-		VARSTRUCT_ENCODE_TYPE(uint8, OutBuffer, emu->header[0]);
-		VARSTRUCT_ENCODE_TYPE(uint8, OutBuffer, emu->header[1]);
-		VARSTRUCT_ENCODE_TYPE(uint8, OutBuffer, emu->header[2]);
+		auto outapp = new EQApplicationPacket(OP_SpecialMesg, buf);
 
-		VARSTRUCT_ENCODE_TYPE(uint32, OutBuffer, emu->msg_type);
-		VARSTRUCT_ENCODE_TYPE(uint32, OutBuffer, emu->target_spawn_id);
-
-		VARSTRUCT_ENCODE_STRING(OutBuffer, emu->sayer);
-
-		VARSTRUCT_ENCODE_TYPE(uint8, OutBuffer, emu->unknown12[0]);
-		VARSTRUCT_ENCODE_TYPE(uint8, OutBuffer, emu->unknown12[1]);
-		VARSTRUCT_ENCODE_TYPE(uint8, OutBuffer, emu->unknown12[2]);
-		VARSTRUCT_ENCODE_TYPE(uint8, OutBuffer, emu->unknown12[3]);
-		VARSTRUCT_ENCODE_TYPE(uint8, OutBuffer, emu->unknown12[4]);
-		VARSTRUCT_ENCODE_TYPE(uint8, OutBuffer, emu->unknown12[5]);
-		VARSTRUCT_ENCODE_TYPE(uint8, OutBuffer, emu->unknown12[6]);
-		VARSTRUCT_ENCODE_TYPE(uint8, OutBuffer, emu->unknown12[7]);
-		VARSTRUCT_ENCODE_TYPE(uint8, OutBuffer, emu->unknown12[8]);
-		VARSTRUCT_ENCODE_TYPE(uint8, OutBuffer, emu->unknown12[9]);
-		VARSTRUCT_ENCODE_TYPE(uint8, OutBuffer, emu->unknown12[10]);
-		VARSTRUCT_ENCODE_TYPE(uint8, OutBuffer, emu->unknown12[11]);
-
-		VARSTRUCT_ENCODE_STRING(OutBuffer, new_message.c_str());
-
-		delete[] __emu_buffer;
-		dest->FastQueuePacket(&in, ack_req);
+		dest->FastQueuePacket(&outapp, ack_req);
+		delete in;
 	}
 
 	ENCODE(OP_Stun)
@@ -2535,13 +2754,16 @@ namespace UF
 		InBuffer += description_size;
 		InBuffer += sizeof(TaskDescriptionData2_Struct);
 
-		std::string old_message = InBuffer; // start 'Reward' as string
+		uint32 reward_size = strlen(InBuffer) + 1;
+		InBuffer += reward_size;
+
+		std::string old_message = InBuffer; // start item link string
 		std::string new_message;
-		ServerToUFTextLink(new_message, old_message);
+		ServerToUFSayLink(new_message, old_message);
 
 		in->size = sizeof(TaskDescriptionHeader_Struct) + sizeof(TaskDescriptionData1_Struct)+
 			sizeof(TaskDescriptionData2_Struct) + sizeof(TaskDescriptionTrailer_Struct)+
-			title_size + description_size + new_message.length() + 1;
+			title_size + description_size + reward_size + new_message.length() + 1;
 
 		in->pBuffer = new unsigned char[in->size];
 
@@ -2572,7 +2794,7 @@ namespace UF
 
 		if (EntryCount == 0 || ((in->size % sizeof(Track_Struct))) != 0)
 		{
-			Log.Out(Logs::General, Logs::Netcode, "[STRUCTS] Wrong size on outbound %s: Got %d, expected multiple of %d", opcodes->EmuToName(in->GetOpcode()), in->size, sizeof(Track_Struct));
+			LogNetcode("[STRUCTS] Wrong size on outbound [{}]: Got [{}], expected multiple of [{}]", opcodes->EmuToName(in->GetOpcode()), in->size, sizeof(Track_Struct));
 			delete in;
 			return;
 		}
@@ -2607,30 +2829,168 @@ namespace UF
 
 	ENCODE(OP_Trader)
 	{
-		if ((*p)->size != sizeof(TraderBuy_Struct)) {
-			EQApplicationPacket *in = *p;
-			*p = nullptr;
-			dest->FastQueuePacket(&in, ack_req);
-			return;
-		}
+		auto action = *(uint32 *) (*p)->pBuffer;
 
-		ENCODE_FORWARD(OP_TraderBuy);
+		switch (action) {
+			case TraderOn: {
+				ENCODE_LENGTH_EXACT(Trader_ShowItems_Struct);
+				SETUP_DIRECT_ENCODE(Trader_ShowItems_Struct, structs::Trader_ShowItems_Struct);
+				LogTrading(
+					"Encode OP_Trader BeginTraderMode action <green>[{}]",
+					action
+				);
+
+				eq->action = structs::UFBazaarTraderBuyerActions::BeginTraderMode;
+				OUT(entity_id);
+
+				FINISH_ENCODE();
+				break;
+			}
+			case TraderOff: {
+				ENCODE_LENGTH_EXACT(Trader_ShowItems_Struct);
+				SETUP_DIRECT_ENCODE(Trader_ShowItems_Struct, structs::Trader_ShowItems_Struct);
+				LogTrading(
+					"Encode OP_Trader EndTraderMode action <green>[{}]",
+					action
+				);
+
+				eq->action = structs::UFBazaarTraderBuyerActions::EndTraderMode;
+				OUT(entity_id);
+
+				FINISH_ENCODE();
+				break;
+			}
+			case ListTraderItems: {
+				ENCODE_LENGTH_EXACT(Trader_Struct);
+				SETUP_DIRECT_ENCODE(Trader_Struct, structs::Trader_Struct);
+				LogTrading(
+					"Encode OP_Trader ListTraderItems action <green>[{}]",
+					action
+				);
+
+				eq->action = structs::UFBazaarTraderBuyerActions::ListTraderItems;
+				std::copy_n(emu->items, UF::invtype::BAZAAR_SIZE, eq->item_id);
+				std::copy_n(emu->item_cost, UF::invtype::BAZAAR_SIZE, eq->item_cost);
+
+				FINISH_ENCODE();
+				break;
+			}
+			case BuyTraderItem: {
+				ENCODE_LENGTH_EXACT(TraderBuy_Struct);
+				SETUP_DIRECT_ENCODE(TraderBuy_Struct, structs::TraderBuy_Struct);
+				LogTrading(
+					"Encode OP_Trader item_id <green>[{}] price <green>[{}] quantity <green>[{}] trader_id <green>[{}]",
+					eq->item_id,
+					eq->price,
+					eq->quantity,
+					eq->trader_id
+				);
+
+				eq->action = structs::UFBazaarTraderBuyerActions::BuyTraderItem;
+				OUT(price);
+				OUT(trader_id);
+				OUT(item_id);
+				OUT(already_sold);
+				OUT(quantity);
+				strn0cpy(eq->item_name, emu->item_name, sizeof(eq->item_name));
+
+				FINISH_ENCODE();
+				break;
+			}
+			case ItemMove: {
+				LogTrading(
+					"Encode OP_Trader ItemMove action <green>[{}]",
+					action
+				);
+				EQApplicationPacket *in = *p;
+				*p = nullptr;
+				dest->FastQueuePacket(&in, ack_req);
+				break;
+			}
+			default: {
+				EQApplicationPacket *in = *p;
+				*p                      = nullptr;
+
+				dest->FastQueuePacket(&in, ack_req);
+				LogError("Unknown Encode OP_Trader action <red>{} received.  Unhandled.", action);
+			}
+		}
 	}
 
 	ENCODE(OP_TraderBuy)
 	{
 		ENCODE_LENGTH_EXACT(TraderBuy_Struct);
 		SETUP_DIRECT_ENCODE(TraderBuy_Struct, structs::TraderBuy_Struct);
+		LogTrading(
+			"Encode OP_TraderBuy item_id <green>[{}] price <green>[{}] quantity <green>[{}] trader_id <green>[{}]",
+			emu->item_id,
+			emu->price,
+			emu->quantity,
+			emu->trader_id
+		);
 
-		OUT(Action);
-		OUT(Price);
-		OUT(TraderID);
-		memcpy(eq->ItemName, emu->ItemName, sizeof(eq->ItemName));
-		OUT(ItemID);
-		OUT(Quantity);
-		OUT(AlreadySold);
+		OUT(action);
+		OUT(price);
+		OUT(trader_id);
+		OUT(item_id);
+		OUT(already_sold);
+		OUT(quantity);
+		OUT_str(item_name);
 
 		FINISH_ENCODE();
+	}
+
+	ENCODE(OP_TraderShop)
+	{
+		auto action = *(uint32 *)(*p)->pBuffer;
+
+		switch (action) {
+			case ClickTrader: {
+				ENCODE_LENGTH_EXACT(TraderClick_Struct);
+				SETUP_DIRECT_ENCODE(TraderClick_Struct, structs::TraderClick_Struct);
+				LogTrading(
+					"ClickTrader action <green>[{}] trader_id <green>[{}]",
+					action,
+					emu->TraderID
+				);
+
+				eq->action    = 0;
+				eq->trader_id = emu->TraderID;
+				eq->approval  = emu->Approval;
+
+				FINISH_ENCODE();
+				break;
+			}
+			case BuyTraderItem: {
+				ENCODE_LENGTH_EXACT(TraderBuy_Struct);
+				SETUP_DIRECT_ENCODE(TraderBuy_Struct, structs::TraderBuy_Struct);
+				LogTrading(
+					"Encode OP_TraderShop item_id <green>[{}] price <green>[{}] quantity <green>[{}] trader_id <green>[{}]",
+					eq->item_id,
+					eq->price,
+					eq->quantity,
+					eq->trader_id
+				);
+
+				eq->action = structs::UFBazaarTraderBuyerActions::BuyTraderItem;
+				OUT(price);
+				OUT(trader_id);
+				OUT(item_id);
+				OUT(already_sold);
+				OUT(quantity);
+				strn0cpy(eq->item_name, emu->item_name, sizeof(eq->item_name));
+
+				FINISH_ENCODE();
+				break;
+			}
+			default: {
+				EQApplicationPacket *in = *p;
+				*p = nullptr;
+
+				dest->FastQueuePacket(&in, ack_req);
+				LogError("Unknown Encode OP_TraderShop action <red>[{}] received.  Unhandled.", action);
+			}
+		}
 	}
 
 	ENCODE(OP_TributeItem)
@@ -2804,7 +3164,7 @@ namespace UF
 		//determine and verify length
 		int entrycount = in->size / sizeof(Spawn_Struct);
 		if (entrycount == 0 || (in->size % sizeof(Spawn_Struct)) != 0) {
-			Log.Out(Logs::General, Logs::Netcode, "[STRUCTS] Wrong size on outbound %s: Got %d, expected multiple of %d", opcodes->EmuToName(in->GetOpcode()), in->size, sizeof(Spawn_Struct));
+			LogNetcode("[STRUCTS] Wrong size on outbound [{}]: Got [{}], expected multiple of [{}]", opcodes->EmuToName(in->GetOpcode()), in->size, sizeof(Spawn_Struct));
 			delete in;
 			return;
 		}
@@ -2832,7 +3192,7 @@ namespace UF
 			if (strlen(emu->suffix))
 				PacketSize += strlen(emu->suffix) + 1;
 
-			if (emu->DestructibleObject || emu->class_ == 62)
+			if (emu->DestructibleObject || emu->class_ == Class::LDoNTreasure)
 			{
 				if (emu->DestructibleObject)
 					PacketSize = PacketSize - 4;	// No bodytype
@@ -2843,7 +3203,7 @@ namespace UF
 				PacketSize += strlen(emu->DestructibleString) + 1;
 			}
 
-			bool ShowName = 1;
+			bool ShowName = emu->show_name;
 			if (emu->bodytype >= 66)
 			{
 				emu->race = 127;
@@ -2853,9 +3213,11 @@ namespace UF
 			}
 
 			float SpawnSize = emu->size;
-			if (!((emu->NPC == 0) || (emu->race <= 12) || (emu->race == 128) || (emu->race == 130) || (emu->race == 330) || (emu->race == 522)))
+			if (!((emu->NPC == 0) || (emu->race <= Race::Gnome) || (emu->race == Race::Iksar) ||
+					(emu->race == Race::VahShir) || (emu->race == Race::Froglok2) || (emu->race == Race::Drakkin))
+				)
 			{
-				PacketSize -= (sizeof(structs::Texture_Struct) * EQEmu::textures::materialCount);
+				PacketSize -= (sizeof(structs::Texture_Struct) * EQ::textures::materialCount);
 
 				if (emu->size == 0)
 				{
@@ -2902,7 +3264,7 @@ namespace UF
 			Bitfields->targetable = 1;
 			Bitfields->targetable_with_hotkey = emu->targetable_with_hotkey ? 1 : 0;
 			Bitfields->statue = 0;
-			Bitfields->trader = 0;
+			Bitfields->trader = emu->trader ? 1 : 0;
 			Bitfields->buyer = 0;
 
 			Bitfields->showname = ShowName;
@@ -2919,18 +3281,20 @@ namespace UF
 
 			uint8 OtherData = 0;
 
-			if (emu->class_ == 62) //Ldon chest
+			if (emu->class_ == Class::LDoNTreasure) //Ldon chest
+			{
 				OtherData = OtherData | 0x01;
+			}
 
-			if (strlen(emu->title))
+			if (strlen(emu->title)) {
 				OtherData = OtherData | 0x04;
-
-			if (strlen(emu->suffix))
+			}
+			if (strlen(emu->suffix)) {
 				OtherData = OtherData | 0x08;
-
-			if (emu->DestructibleObject)
+			}
+			if (emu->DestructibleObject) {
 				OtherData = OtherData | 0xd1;	// Live has 0xe1 for OtherData
-
+			}
 			VARSTRUCT_ENCODE_TYPE(uint8, Buffer, OtherData);
 
 			if (emu->DestructibleObject)
@@ -2943,7 +3307,7 @@ namespace UF
 			}
 			VARSTRUCT_ENCODE_TYPE(float, Buffer, 0);	// unknown4
 
-			if (emu->DestructibleObject || emu->class_ == 62)
+			if (emu->DestructibleObject || emu->class_ == Class::LDoNTreasure)
 			{
 				VARSTRUCT_ENCODE_STRING(Buffer, emu->DestructibleModel);
 				VARSTRUCT_ENCODE_STRING(Buffer, emu->DestructibleName2);
@@ -3015,6 +3379,30 @@ namespace UF
 			else
 			{
 				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->guildID);
+				//Translate older ranks to new values* /
+				switch (emu->guildrank) {
+					case GUILD_SENIOR_MEMBER:
+					case GUILD_MEMBER:
+					case GUILD_JUNIOR_MEMBER:
+					case GUILD_INITIATE:
+					case GUILD_RECRUIT: {
+						emu->guildrank = GUILD_MEMBER_TI;
+						break;
+					}
+					case GUILD_OFFICER:
+					case GUILD_SENIOR_OFFICER: {
+						emu->guildrank = GUILD_OFFICER_TI;
+						break;
+					}
+					case GUILD_LEADER: {
+						emu->guildrank = GUILD_LEADER_TI;
+						break;
+					}
+					default: {
+						emu->guildrank = GUILD_RANK_NONE_TI;
+						break;
+					}
+				}
 				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->guildrank);
 			}
 			VARSTRUCT_ENCODE_TYPE(uint8, Buffer, emu->class_);
@@ -3052,9 +3440,11 @@ namespace UF
 
 			Buffer += sizeof(structs::Spawn_Struct_Position);
 
-			if ((emu->NPC == 0) || (emu->race <= 12) || (emu->race == 128) || (emu->race == 130) || (emu->race == 330) || (emu->race == 522))
+			if ((emu->NPC == 0) || (emu->race <= Race::Gnome) || (emu->race == Race::Iksar) ||
+					(emu->race == Race::VahShir) || (emu->race == Race::Froglok2) || (emu->race == Race::Drakkin)
+				)
 			{
-				for (k = EQEmu::textures::textureBegin; k < EQEmu::textures::materialCount; ++k)
+				for (k = EQ::textures::textureBegin; k < EQ::textures::materialCount; ++k)
 				{
 					{
 						VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->equipment_tint.Slot[k].Color);
@@ -3086,11 +3476,13 @@ namespace UF
 				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, 0);
 			}
 
-			if ((emu->NPC == 0) || (emu->race <= 12) || (emu->race == 128) || (emu->race == 130) || (emu->race == 330) || (emu->race == 522))
+			if ((emu->NPC == 0) || (emu->race <= Race::Gnome) || (emu->race == Race::Iksar) ||
+					(emu->race == Race::VahShir) || (emu->race == Race::Froglok2) || (emu->race == Race::Drakkin)
+				)
 			{
 				structs::Texture_Struct *Equipment = (structs::Texture_Struct *)Buffer;
 
-				for (k = EQEmu::textures::textureBegin; k < EQEmu::textures::materialCount; k++) {
+				for (k = EQ::textures::textureBegin; k < EQ::textures::materialCount; k++) {
 					if (emu->equipment.Slot[k].Material > 99999) {
 						Equipment[k].Material = 63;
 					} else {
@@ -3100,7 +3492,7 @@ namespace UF
 					Equipment[k].EliteMaterial = emu->equipment.Slot[k].EliteModel;
 				}
 
-				Buffer += (sizeof(structs::Texture_Struct) * EQEmu::textures::materialCount);
+				Buffer += (sizeof(structs::Texture_Struct) * EQ::textures::materialCount);
 			}
 			if (strlen(emu->title))
 			{
@@ -3195,18 +3587,58 @@ namespace UF
 
 	DECODE(OP_BazaarSearch)
 	{
-		char *Buffer = (char *)__packet->pBuffer;
+		uint32 action = *(uint32 *) __packet->pBuffer;
 
-		uint8 SubAction = VARSTRUCT_DECODE_TYPE(uint8, Buffer);
+		switch (action) {
+			case structs::UFBazaarTraderBuyerActions::BazaarSearch: {
+				DECODE_LENGTH_EXACT(structs::BazaarSearch_Struct);
+				SETUP_DIRECT_DECODE(BazaarSearchCriteria_Struct, structs::BazaarSearch_Struct);
 
-		if ((SubAction != BazaarInspectItem) || (__packet->size != sizeof(structs::NewBazaarInspect_Struct)))
-			return;
+				emu->action           = eq->Beginning.Action;
+				emu->item_stat        = eq->ItemStat;
+				emu->max_cost         = eq->MaxPrice;
+				emu->min_cost         = eq->MinPrice;
+				emu->max_level        = eq->MaxLlevel;
+				emu->min_level        = eq->Minlevel;
+                emu->race             = eq->Race;
+                emu->slot             = eq->Slot;
+                emu->type             = eq->Type == UINT32_MAX ? UINT8_MAX : eq->Type;
+                emu->trader_entity_id = eq->TraderID;
+                emu->trader_id        = 0;
+                emu->_class           = eq->Class_;
+                emu->search_scope     = eq->TraderID > 0 ? NonRoFBazaarSearchScope : Local_Scope;
+                emu->max_results      = RuleI(Bazaar, MaxSearchResults);
+                strn0cpy(emu->item_name, eq->Name, sizeof(emu->item_name));
 
-		SETUP_DIRECT_DECODE(NewBazaarInspect_Struct, structs::NewBazaarInspect_Struct);
-		MEMSET_IN(structs::NewBazaarInspect_Struct);
-		IN(Beginning.Action);
-		memcpy(emu->Name, eq->Name, sizeof(emu->Name));
-		IN(SerialNumber);
+				FINISH_DIRECT_DECODE();
+				break;
+			}
+			case structs::UFBazaarTraderBuyerActions::BazaarInspect: {
+				SETUP_DIRECT_DECODE(BazaarInspect_Struct, structs::BazaarInspect_Struct);
+
+				IN(action);
+				memcpy(emu->player_name, eq->player_name, sizeof(emu->player_name));
+				IN(serial_number);
+
+				FINISH_DIRECT_DECODE();
+				break;
+			}
+			case structs::UFBazaarTraderBuyerActions::WelcomeMessage: {
+				break;
+			}
+			default: {
+				LogTrading("(UF) Unhandled action <red>[{}]", action);
+			}
+		}
+	}
+
+	DECODE(OP_BookButton)
+	{
+		DECODE_LENGTH_EXACT(structs::BookButton_Struct);
+		SETUP_DIRECT_DECODE(BookButton_Struct, structs::BookButton_Struct);
+
+		emu->invslot = static_cast<int16_t>(UFToServerSlot(eq->invslot));
+		IN(target_id);
 
 		FINISH_DIRECT_DECODE();
 	}
@@ -3248,7 +3680,7 @@ namespace UF
 		DECODE_LENGTH_EXACT(structs::CastSpell_Struct);
 		SETUP_DIRECT_DECODE(CastSpell_Struct, structs::CastSpell_Struct);
 
-		emu->slot = static_cast<uint32>(UFToServerCastingSlot(static_cast<CastingSlot>(eq->slot)));
+		emu->slot = static_cast<uint32>(UFToServerCastingSlot(static_cast<spells::CastingSlot>(eq->slot)));
 
 		IN(spell_id);
 		emu->inventoryslot = UFToServerSlot(eq->inventoryslot);
@@ -3285,7 +3717,7 @@ namespace UF
 
 		std::string old_message = InBuffer;
 		std::string new_message;
-		UFToServerTextLink(new_message, old_message);
+		UFToServerSayLink(new_message, old_message);
 
 		//__packet->size = sizeof(ChannelMessage_Struct)+strlen(InBuffer) + 1;
 		__packet->size = sizeof(ChannelMessage_Struct) + new_message.length() + 1;
@@ -3352,6 +3784,7 @@ namespace UF
 		IN(delta_z);
 		IN(delta_heading);
 		IN(animation);
+		emu->vehicle_id = 0;
 
 		FINISH_DIRECT_DECODE();
 	}
@@ -3396,7 +3829,7 @@ namespace UF
 		IN(type);
 		IN(spellid);
 		IN(damage);
-		IN(meleepush_xy);
+		IN(hit_heading);
 
 		FINISH_DIRECT_DECODE();
 	}
@@ -3413,13 +3846,91 @@ namespace UF
 		FINISH_DIRECT_DECODE();
 	}
 
+	DECODE(OP_DzAddPlayer)
+	{
+		DECODE_LENGTH_EXACT(structs::ExpeditionCommand_Struct);
+		SETUP_DIRECT_DECODE(ExpeditionCommand_Struct, structs::ExpeditionCommand_Struct);
+
+		strn0cpy(emu->name, eq->name, sizeof(emu->name));
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_DzChooseZoneReply)
+	{
+		DECODE_LENGTH_EXACT(structs::DynamicZoneChooseZoneReply_Struct);
+		SETUP_DIRECT_DECODE(DynamicZoneChooseZoneReply_Struct, structs::DynamicZoneChooseZoneReply_Struct);
+
+		IN(unknown000);
+		IN(unknown004);
+		IN(unknown008);
+		IN(unknown_id1);
+		IN(dz_zone_id);
+		IN(dz_instance_id);
+		IN(dz_type);
+		IN(unknown_id2);
+		IN(unknown028);
+		IN(unknown032);
+		IN(unknown036);
+		IN(unknown040);
+		IN(unknown044);
+		IN(unknown048);
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_DzExpeditionInviteResponse)
+	{
+		DECODE_LENGTH_EXACT(structs::ExpeditionInviteResponse_Struct);
+		SETUP_DIRECT_DECODE(ExpeditionInviteResponse_Struct, structs::ExpeditionInviteResponse_Struct);
+
+		IN(dz_zone_id);
+		IN(dz_instance_id);
+		IN(accepted);
+		IN(swapping);
+		strn0cpy(emu->swap_name, eq->swap_name, sizeof(emu->swap_name));
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_DzMakeLeader)
+	{
+		DECODE_LENGTH_EXACT(structs::ExpeditionCommand_Struct);
+		SETUP_DIRECT_DECODE(ExpeditionCommand_Struct, structs::ExpeditionCommand_Struct);
+
+		strn0cpy(emu->name, eq->name, sizeof(emu->name));
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_DzRemovePlayer)
+	{
+		DECODE_LENGTH_EXACT(structs::ExpeditionCommand_Struct);
+		SETUP_DIRECT_DECODE(ExpeditionCommand_Struct, structs::ExpeditionCommand_Struct);
+
+		strn0cpy(emu->name, eq->name, sizeof(emu->name));
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_DzSwapPlayer)
+	{
+		DECODE_LENGTH_EXACT(structs::ExpeditionCommandSwap_Struct);
+		SETUP_DIRECT_DECODE(ExpeditionCommandSwap_Struct, structs::ExpeditionCommandSwap_Struct);
+
+		strn0cpy(emu->add_player_name, eq->add_player_name, sizeof(emu->add_player_name));
+		strn0cpy(emu->rem_player_name, eq->rem_player_name, sizeof(emu->rem_player_name));
+
+		FINISH_DIRECT_DECODE();
+	}
+
 	DECODE(OP_Emote)
 	{
 		unsigned char *__eq_buffer = __packet->pBuffer;
 
 		std::string old_message = (char *)&__eq_buffer[4]; // unknown01 offset
 		std::string new_message;
-		UFToServerTextLink(new_message, old_message);
+		UFToServerSayLink(new_message, old_message);
 
 		__packet->size = sizeof(Emote_Struct);
 		__packet->pBuffer = new unsigned char[__packet->size];
@@ -3553,6 +4064,34 @@ namespace UF
 		DECODE_FORWARD(OP_GroupInvite);
 	}
 
+	DECODE(OP_GuildDemote)
+	{
+		DECODE_LENGTH_EXACT(structs::GuildDemoteStruct);
+		SETUP_DIRECT_DECODE(GuildDemoteStruct, structs::GuildDemoteStruct);
+
+		memcpy(emu->name, eq->name, sizeof(emu->name));
+		memcpy(emu->target, eq->target, sizeof(emu->target));
+		emu->rank = GUILD_MEMBER;
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_GuildTributeDonateItem)
+	{
+		DECODE_LENGTH_EXACT(structs::GuildTributeDonateItemRequest_Struct);
+		SETUP_DIRECT_DECODE(GuildTributeDonateItemRequest_Struct, structs::GuildTributeDonateItemRequest_Struct);
+
+		Log(Logs::Detail, Logs::Netcode, "UF::DECODE(OP_GuildTributeDonateItem)");
+
+		IN(quantity);
+		IN(tribute_master_id);
+		IN(guild_id);
+
+		emu->slot = UFToServerSlot(eq->slot);
+
+		FINISH_DIRECT_DECODE();
+	}
+
 	DECODE(OP_InspectRequest)
 	{
 		DECODE_LENGTH_EXACT(structs::Inspect_Struct);
@@ -3597,7 +4136,7 @@ namespace UF
 		DECODE_LENGTH_EXACT(structs::LoadSpellSet_Struct);
 		SETUP_DIRECT_DECODE(LoadSpellSet_Struct, structs::LoadSpellSet_Struct);
 
-		for (unsigned int i = 0; i < MAX_PP_MEMSPELL; ++i)
+		for (unsigned int i = 0; i < EQ::spells::SPELL_GEM_COUNT; ++i)
 			if (eq->spell[i] == 0)
 				emu->spell[i] = 0xFFFFFFFF;
 			else
@@ -3610,6 +4149,8 @@ namespace UF
 	{
 		DECODE_LENGTH_EXACT(structs::LootingItem_Struct);
 		SETUP_DIRECT_DECODE(LootingItem_Struct, structs::LootingItem_Struct);
+
+		Log(Logs::Detail, Logs::Netcode, "UF::DECODE(OP_LootItem)");
 
 		IN(lootee);
 		IN(looter);
@@ -3624,7 +4165,7 @@ namespace UF
 		DECODE_LENGTH_EXACT(structs::MoveItem_Struct);
 		SETUP_DIRECT_DECODE(MoveItem_Struct, structs::MoveItem_Struct);
 
-		Log.Out(Logs::General, Logs::Netcode, "[UF] Moved item from %u to %u", eq->from_slot, eq->to_slot);
+		Log(Logs::Detail, Logs::Netcode, "UF::DECODE(OP_MoveItem)");
 
 		emu->from_slot = UFToServerSlot(eq->from_slot);
 		emu->to_slot = UFToServerSlot(eq->to_slot);
@@ -3648,39 +4189,48 @@ namespace UF
 	{
 		DECODE_LENGTH_ATLEAST(structs::RaidGeneral_Struct);
 
-		// This is a switch on the RaidGeneral action
-		switch (*(uint32 *)__packet->pBuffer) {
-			case 35: { // raidMOTD
-				// we don't have a nice macro for this
-				structs::RaidMOTD_Struct *__eq_buffer = (structs::RaidMOTD_Struct *)__packet->pBuffer;
-				__eq_buffer->motd[1023] = '\0';
-				size_t motd_size = strlen(__eq_buffer->motd) + 1;
-				__packet->size = sizeof(RaidMOTD_Struct) + motd_size;
-				__packet->pBuffer = new unsigned char[__packet->size];
-				RaidMOTD_Struct *emu = (RaidMOTD_Struct *)__packet->pBuffer;
-				structs::RaidMOTD_Struct *eq = (structs::RaidMOTD_Struct *)__eq_buffer;
-				strn0cpy(emu->general.player_name, eq->general.player_name, 64);
-				strn0cpy(emu->motd, eq->motd, motd_size);
-				IN(general.action);
-				IN(general.parameter);
-				FINISH_DIRECT_DECODE();
-				break;
-			}
-			case 36: { // raidPlayerNote unhandled
-				break;
-			}
-			default: {
-				DECODE_LENGTH_EXACT(structs::RaidGeneral_Struct);
-				SETUP_DIRECT_DECODE(RaidGeneral_Struct, structs::RaidGeneral_Struct);
-				strn0cpy(emu->leader_name, eq->leader_name, 64);
-				strn0cpy(emu->player_name, eq->player_name, 64);
-				IN(action);
-				IN(parameter);
-				FINISH_DIRECT_DECODE();
-				break;
-			}
-		}
+		RaidGeneral_Struct* rgs = (RaidGeneral_Struct*)__packet->pBuffer;
 
+		switch (rgs->action)
+		{
+		case raidSetMotd:
+		{
+			SETUP_VAR_DECODE(RaidMOTD_Struct, structs::RaidMOTD_Struct, motd);
+
+			IN(general.action);
+			IN(general.parameter);
+			IN_str(general.leader_name);
+			IN_str(general.player_name);
+			IN_str(motd);
+
+			FINISH_VAR_DECODE();
+			break;
+		}
+		case raidSetNote:
+		{
+			SETUP_VAR_DECODE(RaidNote_Struct, structs::RaidNote_Struct, note);
+
+			IN(general.action);
+			IN(general.parameter);
+			IN_str(general.leader_name);
+			IN_str(general.player_name);
+			IN_str(note);
+
+			FINISH_VAR_DECODE();
+			break;
+		}
+		default:
+		{
+			SETUP_DIRECT_DECODE(RaidGeneral_Struct, structs::RaidGeneral_Struct);
+			IN(action);
+			IN(parameter);
+			IN_str(leader_name);
+			IN_str(player_name);
+
+			FINISH_DIRECT_DECODE();
+			break;
+		}
+		}
 	}
 
 	DECODE(OP_ReadBook)
@@ -3689,7 +4239,8 @@ namespace UF
 		SETUP_DIRECT_DECODE(BookRequest_Struct, structs::BookRequest_Struct);
 
 		IN(type);
-		emu->invslot = UFToServerSlot(eq->invslot);
+		emu->invslot = static_cast<int16_t>(UFToServerSlot(eq->invslot));
+		IN(target_id);
 		emu->window = (uint8)eq->window;
 		strn0cpy(emu->txtfile, eq->txtfile, sizeof(emu->txtfile));
 
@@ -3746,18 +4297,112 @@ namespace UF
 		FINISH_DIRECT_DECODE();
 	}
 
+	DECODE(OP_ShopRequest)
+	{
+		DECODE_LENGTH_EXACT(structs::MerchantClick_Struct);
+		SETUP_DIRECT_DECODE(MerchantClick_Struct, structs::MerchantClick_Struct);
+
+		IN(npc_id);
+		IN(player_id);
+		IN(command);
+		IN(rate);
+		emu->tab_display = 0;
+		emu->unknown020 = 0;
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_Trader)
+	{
+		auto action = (uint32) __packet->pBuffer[0];
+
+		switch (action) {
+			case structs::UFBazaarTraderBuyerActions::BeginTraderMode: {
+				DECODE_LENGTH_EXACT(structs::BeginTrader_Struct);
+				SETUP_DIRECT_DECODE(ClickTrader_Struct, structs::BeginTrader_Struct);
+				LogTrading(
+					"Decode OP_Trader BeginTraderMode action <red>[{}]",
+					action
+				);
+
+				emu->action      = TraderOn;
+				emu->unknown_004 = 0;
+				std::copy_n(eq->serial_number, UF::invtype::BAZAAR_SIZE, emu->serial_number);
+				std::copy_n(eq->cost, UF::invtype::BAZAAR_SIZE, emu->item_cost);
+
+				FINISH_DIRECT_DECODE();
+				break;
+			}
+			case structs::UFBazaarTraderBuyerActions::EndTraderMode: {
+				DECODE_LENGTH_EXACT(structs::Trader_ShowItems_Struct);
+				SETUP_DIRECT_DECODE(Trader_ShowItems_Struct, structs::Trader_ShowItems_Struct);
+				LogTrading(
+					"Decode OP_Trader(UF) EndTraderMode action <red>[{}]",
+					action
+				);
+
+				emu->action = TraderOff;
+				IN(entity_id);
+
+				FINISH_DIRECT_DECODE();
+				break;
+			}
+			case structs::UFBazaarTraderBuyerActions::PriceUpdate:
+			case structs::UFBazaarTraderBuyerActions::ItemMove:
+			case structs::UFBazaarTraderBuyerActions::EndTransaction:
+			case structs::UFBazaarTraderBuyerActions::ListTraderItems: {
+				LogTrading(
+					"Decode OP_Trader(UF) Price/ItemMove/EndTransaction/ListTraderItems action <red>[{}]",
+					action
+				);
+				break;
+			}
+			case structs::UFBazaarTraderBuyerActions::ReconcileItems: {
+				break;
+			}
+			default: {
+				LogError("Unhandled(UF) action <red>[{}] received.", action);
+			}
+		}
+	}
+
 	DECODE(OP_TraderBuy)
 	{
 		DECODE_LENGTH_EXACT(structs::TraderBuy_Struct);
 		SETUP_DIRECT_DECODE(TraderBuy_Struct, structs::TraderBuy_Struct);
-		MEMSET_IN(TraderBuy_Struct);
+		LogTrading(
+			"Decode OP_TraderBuy(UF) item_id <green>[{}] price <green>[{}] quantity <green>[{}] trader_id <green>[{}]",
+			eq->item_id,
+			eq->price,
+			eq->quantity,
+			eq->trader_id
+		);
 
-		IN(Action);
-		IN(Price);
-		IN(TraderID);
-		memcpy(emu->ItemName, eq->ItemName, sizeof(emu->ItemName));
-		IN(ItemID);
-		IN(Quantity);
+		emu->action = BuyTraderItem;
+		IN(price);
+		IN(trader_id);
+		IN(item_id);
+		IN(quantity);
+		IN(already_sold);
+		strn0cpy(emu->item_name, eq->item_name, sizeof(eq->item_name));
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_TraderShop)
+	{
+		DECODE_LENGTH_EXACT(structs::TraderClick_Struct);
+		SETUP_DIRECT_DECODE(TraderClick_Struct, structs::TraderClick_Struct);
+		LogTrading(
+			"(UF) action <green>[{}] trader_id <green>[{}] approval <green>[{}]",
+			eq->action,
+			eq->trader_id,
+			eq->approval
+		);
+
+		emu->Code     = ClickTrader;
+		emu->TraderID = eq->trader_id;
+		emu->Approval = eq->approval;
 
 		FINISH_DIRECT_DECODE();
 	}
@@ -3834,10 +4479,10 @@ namespace UF
 		return NextItemInstSerialNumber;
 	}
 
-	void SerializeItem(EQEmu::OutBuffer& ob, const EQEmu::ItemInstance *inst, int16 slot_id_in, uint8 depth)
+	void SerializeItem(EQ::OutBuffer& ob, const EQ::ItemInstance *inst, int16 slot_id_in, uint8 depth)
 	{
-		const EQEmu::ItemData *item = inst->GetUnscaledItem();
-		
+		const EQ::ItemData *item = inst->GetUnscaledItem();
+
 		UF::structs::ItemSerializationHeader hdr;
 
 		hdr.stacksize = (inst->IsStackable() ? ((inst->GetCharges() > 1000) ? 0xFFFFFFFF : inst->GetCharges()) : 1);
@@ -3876,17 +4521,17 @@ namespace UF
 			ob.write((const char*)&evotop, sizeof(UF::structs::EvolvingItem));
 		}
 
-		//ORNAMENT IDFILE / ICON -
-		int ornamentationAugtype = RuleI(Character, OrnamentationAugmentType);
-		uint16 ornaIcon = 0;
-		if (inst->GetOrnamentationAug(ornamentationAugtype)) {
-			const EQEmu::ItemData *aug_weap = inst->GetOrnamentationAug(ornamentationAugtype)->GetItem();
-			ornaIcon = aug_weap->Icon;
+		uint16     ornament_icon = 0;
+		const auto augment       = inst->GetOrnamentationAugment();
 
-			ob.write(aug_weap->IDFile, strlen(aug_weap->IDFile));
+		if (augment) {
+			const auto augment_item = augment->GetItem();
+			ornament_icon = augment_item->Icon;
+
+			ob.write(augment_item->IDFile, strlen(augment_item->IDFile));
 		}
 		else if (inst->GetOrnamentationIDFile() && inst->GetOrnamentationIcon()) {
-			ornaIcon = inst->GetOrnamentationIcon();
+			ornament_icon = inst->GetOrnamentationIcon();
 			char tmp[30]; memset(tmp, 0x0, 30); sprintf(tmp, "IT%d", inst->GetOrnamentationIDFile());
 
 			ob.write(tmp, strlen(tmp));
@@ -3895,7 +4540,7 @@ namespace UF
 
 		UF::structs::ItemSerializationHeaderFinish hdrf;
 
-		hdrf.ornamentIcon = ornaIcon;
+		hdrf.ornamentIcon = ornament_icon;
 		hdrf.unknown060 = 0; //This is Always 0.. or it breaks shit..
 		hdrf.unknown061 = 0; //possibly ornament / special ornament
 		hdrf.isCopied = 0; //Flag for item to be 'Copied'
@@ -3925,7 +4570,7 @@ namespace UF
 		ibs.nodrop = item->NoDrop;
 		ibs.attune = item->Attuneable;
 		ibs.size = item->Size;
-		ibs.slots = SwapBits21and22(item->Slots);
+		ibs.slots = item->Slots;
 		ibs.price = item->Price;
 		ibs.icon = item->Icon;
 		ibs.unknown1 = 1;
@@ -4015,7 +4660,7 @@ namespace UF
 		isbs.augtype = item->AugType;
 		isbs.augrestrict = item->AugRestrict;
 
-		for (int index = 0; index < invaug::ItemAugSize; ++index) {
+		for (int index = invaug::SOCKET_BEGIN; index <= invaug::SOCKET_END; ++index) {
 			isbs.augslots[index].type = item->AugSlotType[index];
 			isbs.augslots[index].visible = item->AugSlotVisible[index];
 			isbs.augslots[index].unknown = item->AugSlotUnk2[index];
@@ -4062,6 +4707,12 @@ namespace UF
 		itbs.stacksize = (inst->IsStackable() ? item->StackSize : 0);
 		itbs.no_transfer = item->NoTransfer;
 		itbs.expendablearrow = item->ExpendableArrow;
+
+		// Done to hack older clients to label expendable fishing poles as such
+		// July 28th, 2018 patch
+		if (item->ItemType == EQ::item::ItemTypeFishingPole && item->SubType == 0) {
+			itbs.expendablearrow = 1;
+		}
 
 		ob.write((const char*)&itbs, sizeof(UF::structs::ItemTertiaryBodyStruct));
 
@@ -4203,104 +4854,225 @@ namespace UF
 		iqbs.HealAmt = item->HealAmt;
 		iqbs.SpellDmg = item->SpellDmg;
 		iqbs.Clairvoyance = item->Clairvoyance;
-		
+		iqbs.SubType = item->SubType;
+
 		ob.write((const char*)&iqbs, sizeof(UF::structs::ItemQuaternaryBodyStruct));
 
-		EQEmu::OutBuffer::pos_type count_pos = ob.tellp();
+		EQ::OutBuffer::pos_type count_pos = ob.tellp();
 		uint32 subitem_count = 0;
 
 		ob.write((const char*)&subitem_count, sizeof(uint32));
 
-		for (uint32 index = EQEmu::inventory::containerBegin; index < EQEmu::inventory::ContainerCount; ++index) {
-			EQEmu::ItemInstance* sub = inst->GetItem(index);
-			if (!sub)
-				continue;
+		// moved outside of loop since it is not modified within that scope
+		int16 SubSlotNumber = EQ::invbag::SLOT_INVALID;
 
-			int SubSlotNumber = INVALID_INDEX;
-			if (slot_id_in >= EQEmu::legacy::GENERAL_BEGIN && slot_id_in <= EQEmu::legacy::GENERAL_END)
-				SubSlotNumber = (((slot_id_in + 3) * EQEmu::inventory::ContainerCount) + index + 1);
-			else if (slot_id_in >= EQEmu::legacy::BANK_BEGIN && slot_id_in <= EQEmu::legacy::BANK_END)
-				SubSlotNumber = (((slot_id_in - EQEmu::legacy::BANK_BEGIN) * EQEmu::inventory::ContainerCount) + EQEmu::legacy::BANK_BAGS_BEGIN + index);
-			else if (slot_id_in >= EQEmu::legacy::SHARED_BANK_BEGIN && slot_id_in <= EQEmu::legacy::SHARED_BANK_END)
-				SubSlotNumber = (((slot_id_in - EQEmu::legacy::SHARED_BANK_BEGIN) * EQEmu::inventory::ContainerCount) + EQEmu::legacy::SHARED_BANK_BAGS_BEGIN + index);
-			else
-				SubSlotNumber = slot_id_in;
+		if (slot_id_in <= EQ::invslot::slotGeneral8 && slot_id_in >= EQ::invslot::GENERAL_BEGIN)
+			SubSlotNumber = EQ::invbag::GENERAL_BAGS_BEGIN + ((slot_id_in - EQ::invslot::GENERAL_BEGIN) * EQ::invbag::SLOT_COUNT);
+		else if (slot_id_in <= EQ::invslot::GENERAL_END && slot_id_in >= EQ::invslot::slotGeneral9)
+			SubSlotNumber = EQ::invbag::SLOT_INVALID;
+		else if (slot_id_in == EQ::invslot::slotCursor)
+			SubSlotNumber = EQ::invbag::CURSOR_BAG_BEGIN;
+		else if (slot_id_in <= EQ::invslot::BANK_END && slot_id_in >= EQ::invslot::BANK_BEGIN)
+			SubSlotNumber = EQ::invbag::BANK_BAGS_BEGIN + ((slot_id_in - EQ::invslot::BANK_BEGIN) * EQ::invbag::SLOT_COUNT);
+		else if (slot_id_in <= EQ::invslot::SHARED_BANK_END && slot_id_in >= EQ::invslot::SHARED_BANK_BEGIN)
+			SubSlotNumber = EQ::invbag::SHARED_BANK_BAGS_BEGIN + ((slot_id_in - EQ::invslot::SHARED_BANK_BEGIN) * EQ::invbag::SLOT_COUNT);
+		else
+			SubSlotNumber = slot_id_in; // not sure if this is the best way to handle this..leaving for now
 
-			ob.write((const char*)&index, sizeof(uint32));
+		if (SubSlotNumber != EQ::invbag::SLOT_INVALID) {
+			for (uint32 index = EQ::invbag::SLOT_BEGIN; index <= EQ::invbag::SLOT_END; ++index) {
+				EQ::ItemInstance* sub = inst->GetItem(index);
+				if (!sub)
+					continue;
 
-			SerializeItem(ob, sub, SubSlotNumber, (depth + 1));
-			++subitem_count;
+				ob.write((const char*)&index, sizeof(uint32));
+
+				SerializeItem(ob, sub, SubSlotNumber, (depth + 1));
+				++subitem_count;
+			}
+
+			if (subitem_count)
+				ob.overwrite(count_pos, (const char*)&subitem_count, sizeof(uint32));
 		}
-
-		if (subitem_count)
-			ob.overwrite(count_pos, (const char*)&subitem_count, sizeof(uint32));
 	}
 
 	static inline uint32 ServerToUFSlot(uint32 serverSlot)
 	{
-		uint32 UnderfootSlot = 0;
+		uint32 UFSlot = invslot::SLOT_INVALID;
 
-		if (serverSlot >= EQEmu::inventory::slotAmmo && serverSlot <= 53) // Cursor/Ammo/Power Source and Normal Inventory Slots
-			UnderfootSlot = serverSlot + 1;
-		else if (serverSlot >= EQEmu::legacy::GENERAL_BAGS_BEGIN && serverSlot <= EQEmu::legacy::CURSOR_BAG_END)
-			UnderfootSlot = serverSlot + 11;
-		else if (serverSlot >= EQEmu::legacy::BANK_BAGS_BEGIN && serverSlot <= EQEmu::legacy::BANK_BAGS_END)
-			UnderfootSlot = serverSlot + 1;
-		else if (serverSlot >= EQEmu::legacy::SHARED_BANK_BAGS_BEGIN && serverSlot <= EQEmu::legacy::SHARED_BANK_BAGS_END)
-			UnderfootSlot = serverSlot + 1;
-		else if (serverSlot == EQEmu::inventory::slotPowerSource)
-			UnderfootSlot = invslot::PossessionsPowerSource;
-		else
-			UnderfootSlot = serverSlot;
+		if (serverSlot <= EQ::invslot::slotGeneral8) {
+			UFSlot = serverSlot;
+		}
 
-		return UnderfootSlot;
+		else if (serverSlot <= EQ::invslot::CORPSE_END && serverSlot >= EQ::invslot::slotCursor) {
+			UFSlot = serverSlot - 2;
+		}
+
+		else if (serverSlot <= EQ::invbag::GENERAL_BAGS_8_END && serverSlot >= EQ::invbag::GENERAL_BAGS_BEGIN) {
+			UFSlot = serverSlot + 11;
+		}
+
+		else if (serverSlot <= EQ::invbag::CURSOR_BAG_END && serverSlot >= EQ::invbag::CURSOR_BAG_BEGIN) {
+			UFSlot = serverSlot - 9;
+		}
+
+		else if (serverSlot <= EQ::invslot::TRIBUTE_END && serverSlot >= EQ::invslot::TRIBUTE_BEGIN) {
+			UFSlot = serverSlot;
+		}
+
+		else if (serverSlot <= EQ::invslot::GUILD_TRIBUTE_END && serverSlot >= EQ::invslot::GUILD_TRIBUTE_BEGIN) {
+			UFSlot = serverSlot;
+		}
+
+		else if (serverSlot == EQ::invslot::SLOT_TRADESKILL_EXPERIMENT_COMBINE) {
+			UFSlot = serverSlot;
+		}
+
+		else if (serverSlot <= EQ::invslot::BANK_END && serverSlot >= EQ::invslot::BANK_BEGIN) {
+			UFSlot = serverSlot;
+		}
+
+		else if (serverSlot <= EQ::invbag::BANK_BAGS_END && serverSlot >= EQ::invbag::BANK_BAGS_BEGIN) {
+			UFSlot = serverSlot + 1;
+		}
+
+		else if (serverSlot <= EQ::invslot::SHARED_BANK_END && serverSlot >= EQ::invslot::SHARED_BANK_BEGIN) {
+			UFSlot = serverSlot;
+		}
+
+		else if (serverSlot <= EQ::invbag::SHARED_BANK_BAGS_END && serverSlot >= EQ::invbag::SHARED_BANK_BAGS_BEGIN) {
+			UFSlot = serverSlot + 1;
+		}
+
+		else if (serverSlot <= EQ::invslot::TRADE_END && serverSlot >= EQ::invslot::TRADE_BEGIN) {
+			UFSlot = serverSlot;
+		}
+
+		else if (serverSlot <= EQ::invbag::TRADE_BAGS_END && serverSlot >= EQ::invbag::TRADE_BAGS_BEGIN) {
+			UFSlot = serverSlot;
+		}
+
+		else if (serverSlot <= EQ::invslot::WORLD_END && serverSlot >= EQ::invslot::WORLD_BEGIN) {
+			UFSlot = serverSlot;
+		}
+
+		LogNetcode("Convert Server Slot [{}] to UF Slot [{}]", serverSlot, UFSlot);
+
+		return UFSlot;
 	}
 
 	static inline uint32 ServerToUFCorpseSlot(uint32 serverCorpseSlot)
 	{
-		//uint32 UnderfootCorpse;
-		return (serverCorpseSlot + 1);
+		uint32 UFSlot = invslot::SLOT_INVALID;
+
+		if (serverCorpseSlot <= EQ::invslot::slotGeneral8 && serverCorpseSlot >= EQ::invslot::slotGeneral1) {
+			UFSlot = serverCorpseSlot;
+		}
+
+		else if (serverCorpseSlot <= EQ::invslot::CORPSE_END && serverCorpseSlot >= EQ::invslot::slotCursor) {
+			UFSlot = serverCorpseSlot - 2;
+		}
+
+		LogNetcode("Convert Server Corpse Slot [{}] to UF Corpse Slot [{}]", serverCorpseSlot, UFSlot);
+
+		return UFSlot;
 	}
 
 	static inline uint32 UFToServerSlot(uint32 ufSlot)
 	{
-		uint32 ServerSlot = 0;
+		uint32 ServerSlot = EQ::invslot::SLOT_INVALID;
 
-		if (ufSlot >= invslot::PossessionsAmmo && ufSlot <= invslot::CorpseEnd) // Cursor/Ammo/Power Source and Normal Inventory Slots
-			ServerSlot = ufSlot - 1;
-		else if (ufSlot >= invbag::GeneralBagsBegin && ufSlot <= invbag::CursorBagEnd)
-			ServerSlot = ufSlot - 11;
-		else if (ufSlot >= invbag::BankBagsBegin && ufSlot <= invbag::BankBagsEnd)
-			ServerSlot = ufSlot - 1;
-		else if (ufSlot >= invbag::SharedBankBagsBegin && ufSlot <= invbag::SharedBankBagsEnd)
-			ServerSlot = ufSlot - 1;
-		else if (ufSlot == invslot::PossessionsPowerSource)
-			ServerSlot = EQEmu::inventory::slotPowerSource;
-		else
+		if (ufSlot <= invslot::slotGeneral8) {
 			ServerSlot = ufSlot;
+		}
+
+		else if (ufSlot <= invslot::CORPSE_END && ufSlot >= invslot::slotCursor) {
+			ServerSlot = ufSlot + 2;
+		}
+
+		else if (ufSlot <= invbag::GENERAL_BAGS_END && ufSlot >= invbag::GENERAL_BAGS_BEGIN) {
+			ServerSlot = ufSlot - 11;
+		}
+
+		else if (ufSlot <= invbag::CURSOR_BAG_END && ufSlot >= invbag::CURSOR_BAG_BEGIN) {
+			ServerSlot = ufSlot + 9;
+		}
+
+		else if (ufSlot <= invslot::TRIBUTE_END && ufSlot >= invslot::TRIBUTE_BEGIN) {
+			ServerSlot = ufSlot;
+		}
+
+		else if (ufSlot <= invslot::GUILD_TRIBUTE_END && ufSlot >= invslot::GUILD_TRIBUTE_BEGIN) {
+			ServerSlot = ufSlot;
+		}
+
+		else if (ufSlot == invslot::SLOT_TRADESKILL_EXPERIMENT_COMBINE) {
+			ServerSlot = ufSlot;
+		}
+
+		else if (ufSlot <= invslot::BANK_END && ufSlot >= invslot::BANK_BEGIN) {
+			ServerSlot = ufSlot;
+		}
+
+		else if (ufSlot <= invbag::BANK_BAGS_END && ufSlot >= invbag::BANK_BAGS_BEGIN) {
+			ServerSlot = ufSlot - 1;
+		}
+
+		else if (ufSlot <= invslot::SHARED_BANK_END && ufSlot >= invslot::SHARED_BANK_BEGIN) {
+			ServerSlot = ufSlot;
+		}
+
+		else if (ufSlot <= invbag::SHARED_BANK_BAGS_END && ufSlot >= invbag::SHARED_BANK_BAGS_BEGIN) {
+			ServerSlot = ufSlot - 1;
+		}
+
+		else if (ufSlot <= invslot::TRADE_END && ufSlot >= invslot::TRADE_BEGIN) {
+			ServerSlot = ufSlot;
+		}
+
+		else if (ufSlot <= invbag::TRADE_BAGS_END && ufSlot >= invbag::TRADE_BAGS_BEGIN) {
+			ServerSlot = ufSlot;
+		}
+
+		else if (ufSlot <= invslot::WORLD_END && ufSlot >= invslot::WORLD_BEGIN) {
+			ServerSlot = ufSlot;
+		}
+
+		LogNetcode("Convert UF Slot [{}] to Server Slot [{}]", ufSlot, ServerSlot);
 
 		return ServerSlot;
 	}
 
 	static inline uint32 UFToServerCorpseSlot(uint32 ufCorpseSlot)
 	{
-		//uint32 ServerCorpse;
-		return (ufCorpseSlot - 1);
+		uint32 ServerSlot = EQ::invslot::SLOT_INVALID;
+
+		if (ufCorpseSlot <= invslot::slotGeneral8 && ufCorpseSlot >= invslot::slotGeneral1) {
+			ServerSlot = ufCorpseSlot;
+		}
+
+		else if (ufCorpseSlot <= invslot::CORPSE_END && ufCorpseSlot >= invslot::slotCursor) {
+			ServerSlot = ufCorpseSlot + 2;
+		}
+
+		LogNetcode("Convert UF Corpse Slot [{}] to Server Corpse Slot [{}]", ufCorpseSlot, ServerSlot);
+
+		return ServerSlot;
 	}
 
-	static inline void ServerToUFTextLink(std::string& ufTextLink, const std::string& serverTextLink)
+	static inline void ServerToUFSayLink(std::string& ufSayLink, const std::string& serverSayLink)
 	{
-		if ((constants::SayLinkBodySize == EQEmu::legacy::TEXT_LINK_BODY_LENGTH) || (serverTextLink.find('\x12') == std::string::npos)) {
-			ufTextLink = serverTextLink;
+		if ((constants::SAY_LINK_BODY_SIZE == EQ::constants::SAY_LINK_BODY_SIZE) || (serverSayLink.find('\x12') == std::string::npos)) {
+			ufSayLink = serverSayLink;
 			return;
 		}
 
-		auto segments = SplitString(serverTextLink, '\x12');
+		auto segments = Strings::Split(serverSayLink, '\x12');
 
 		for (size_t segment_iter = 0; segment_iter < segments.size(); ++segment_iter) {
 			if (segment_iter & 1) {
-				if (segments[segment_iter].length() <= EQEmu::legacy::TEXT_LINK_BODY_LENGTH) {
-					ufTextLink.append(segments[segment_iter]);
+				if (segments[segment_iter].length() <= EQ::constants::SAY_LINK_BODY_SIZE) {
+					ufSayLink.append(segments[segment_iter]);
 					// TODO: log size mismatch error
 					continue;
 				}
@@ -4310,37 +5082,37 @@ namespace UF
 				// SoF:  X XXXXX XXXXX XXXXX XXXXX XXXXX XXXXX       X  XXXX  X XXXXX XXXXXXXX (50)
 				// Diff:                                       ^^^^^         ^
 
-				ufTextLink.push_back('\x12');
-				ufTextLink.append(segments[segment_iter].substr(0, 31));
-				ufTextLink.append(segments[segment_iter].substr(36, 5));
+				ufSayLink.push_back('\x12');
+				ufSayLink.append(segments[segment_iter].substr(0, 31));
+				ufSayLink.append(segments[segment_iter].substr(36, 5));
 
 				if (segments[segment_iter][41] == '0')
-					ufTextLink.push_back(segments[segment_iter][42]);
+					ufSayLink.push_back(segments[segment_iter][42]);
 				else
-					ufTextLink.push_back('F');
+					ufSayLink.push_back('F');
 
-				ufTextLink.append(segments[segment_iter].substr(43));
-				ufTextLink.push_back('\x12');
+				ufSayLink.append(segments[segment_iter].substr(43));
+				ufSayLink.push_back('\x12');
 			}
 			else {
-				ufTextLink.append(segments[segment_iter]);
+				ufSayLink.append(segments[segment_iter]);
 			}
 		}
 	}
 
-	static inline void UFToServerTextLink(std::string& serverTextLink, const std::string& ufTextLink)
+	static inline void UFToServerSayLink(std::string& serverSayLink, const std::string& ufSayLink)
 	{
-		if ((EQEmu::legacy::TEXT_LINK_BODY_LENGTH == constants::SayLinkBodySize) || (ufTextLink.find('\x12') == std::string::npos)) {
-			serverTextLink = ufTextLink;
+		if ((EQ::constants::SAY_LINK_BODY_SIZE == constants::SAY_LINK_BODY_SIZE) || (ufSayLink.find('\x12') == std::string::npos)) {
+			serverSayLink = ufSayLink;
 			return;
 		}
 
-		auto segments = SplitString(ufTextLink, '\x12');
+		auto segments = Strings::Split(ufSayLink, '\x12');
 
 		for (size_t segment_iter = 0; segment_iter < segments.size(); ++segment_iter) {
 			if (segment_iter & 1) {
-				if (segments[segment_iter].length() <= constants::SayLinkBodySize) {
-					serverTextLink.append(segments[segment_iter]);
+				if (segments[segment_iter].length() <= constants::SAY_LINK_BODY_SIZE) {
+					serverSayLink.append(segments[segment_iter]);
 					// TODO: log size mismatch error
 					continue;
 				}
@@ -4350,106 +5122,106 @@ namespace UF
 				// RoF2: X XXXXX XXXXX XXXXX XXXXX XXXXX XXXXX XXXXX X  XXXX XX  XXXXX XXXXXXXX (56)
 				// Diff:                                       ^^^^^         ^
 
-				serverTextLink.push_back('\x12');
-				serverTextLink.append(segments[segment_iter].substr(0, 31));
-				serverTextLink.append("00000");
-				serverTextLink.append(segments[segment_iter].substr(31, 5));
-				serverTextLink.push_back('0');
-				serverTextLink.append(segments[segment_iter].substr(36));
-				serverTextLink.push_back('\x12');
+				serverSayLink.push_back('\x12');
+				serverSayLink.append(segments[segment_iter].substr(0, 31));
+				serverSayLink.append("00000");
+				serverSayLink.append(segments[segment_iter].substr(31, 5));
+				serverSayLink.push_back('0');
+				serverSayLink.append(segments[segment_iter].substr(36));
+				serverSayLink.push_back('\x12');
 			}
 			else {
-				serverTextLink.append(segments[segment_iter]);
+				serverSayLink.append(segments[segment_iter]);
 			}
 		}
 	}
 
-	static inline CastingSlot ServerToUFCastingSlot(EQEmu::CastingSlot slot)
+	static inline spells::CastingSlot ServerToUFCastingSlot(EQ::spells::CastingSlot slot)
 	{
 		switch (slot) {
-		case EQEmu::CastingSlot::Gem1:
-			return CastingSlot::Gem1;
-		case EQEmu::CastingSlot::Gem2:
-			return CastingSlot::Gem2;
-		case EQEmu::CastingSlot::Gem3:
-			return CastingSlot::Gem3;
-		case EQEmu::CastingSlot::Gem4:
-			return CastingSlot::Gem4;
-		case EQEmu::CastingSlot::Gem5:
-			return CastingSlot::Gem5;
-		case EQEmu::CastingSlot::Gem6:
-			return CastingSlot::Gem6;
-		case EQEmu::CastingSlot::Gem7:
-			return CastingSlot::Gem7;
-		case EQEmu::CastingSlot::Gem8:
-			return CastingSlot::Gem8;
-		case EQEmu::CastingSlot::Gem9:
-			return CastingSlot::Gem9;
-		case EQEmu::CastingSlot::Gem10:
-			return CastingSlot::Gem10;
-		case EQEmu::CastingSlot::Gem11:
-			return CastingSlot::Gem11;
-		case EQEmu::CastingSlot::Gem12:
-			return CastingSlot::Gem12;
-		case EQEmu::CastingSlot::Item:
-		case EQEmu::CastingSlot::PotionBelt:
-			return CastingSlot::Item;
-		case EQEmu::CastingSlot::Discipline:
-			return CastingSlot::Discipline;
-		case EQEmu::CastingSlot::AltAbility:
-			return CastingSlot::AltAbility;
+		case EQ::spells::CastingSlot::Gem1:
+			return spells::CastingSlot::Gem1;
+		case EQ::spells::CastingSlot::Gem2:
+			return spells::CastingSlot::Gem2;
+		case EQ::spells::CastingSlot::Gem3:
+			return spells::CastingSlot::Gem3;
+		case EQ::spells::CastingSlot::Gem4:
+			return spells::CastingSlot::Gem4;
+		case EQ::spells::CastingSlot::Gem5:
+			return spells::CastingSlot::Gem5;
+		case EQ::spells::CastingSlot::Gem6:
+			return spells::CastingSlot::Gem6;
+		case EQ::spells::CastingSlot::Gem7:
+			return spells::CastingSlot::Gem7;
+		case EQ::spells::CastingSlot::Gem8:
+			return spells::CastingSlot::Gem8;
+		case EQ::spells::CastingSlot::Gem9:
+			return spells::CastingSlot::Gem9;
+		case EQ::spells::CastingSlot::Gem10:
+			return spells::CastingSlot::Gem10;
+		case EQ::spells::CastingSlot::Gem11:
+			return spells::CastingSlot::Gem11;
+		case EQ::spells::CastingSlot::Gem12:
+			return spells::CastingSlot::Gem12;
+		case EQ::spells::CastingSlot::Item:
+		case EQ::spells::CastingSlot::PotionBelt:
+			return spells::CastingSlot::Item;
+		case EQ::spells::CastingSlot::Discipline:
+			return spells::CastingSlot::Discipline;
+		case EQ::spells::CastingSlot::AltAbility:
+			return spells::CastingSlot::AltAbility;
 		default: // we shouldn't have any issues with other slots ... just return something
-			return CastingSlot::Discipline;
+			return spells::CastingSlot::Discipline;
 		}
 	}
 
-	static inline EQEmu::CastingSlot UFToServerCastingSlot(CastingSlot slot)
+	static inline EQ::spells::CastingSlot UFToServerCastingSlot(spells::CastingSlot slot)
 	{
 		switch (slot) {
-		case CastingSlot::Gem1:
-			return EQEmu::CastingSlot::Gem1;
-		case CastingSlot::Gem2:
-			return EQEmu::CastingSlot::Gem2;
-		case CastingSlot::Gem3:
-			return EQEmu::CastingSlot::Gem3;
-		case CastingSlot::Gem4:
-			return EQEmu::CastingSlot::Gem4;
-		case CastingSlot::Gem5:
-			return EQEmu::CastingSlot::Gem5;
-		case CastingSlot::Gem6:
-			return EQEmu::CastingSlot::Gem6;
-		case CastingSlot::Gem7:
-			return EQEmu::CastingSlot::Gem7;
-		case CastingSlot::Gem8:
-			return EQEmu::CastingSlot::Gem8;
-		case CastingSlot::Gem9:
-			return EQEmu::CastingSlot::Gem9;
-		case CastingSlot::Gem10:
-			return EQEmu::CastingSlot::Gem10;
-		case CastingSlot::Gem11:
-			return EQEmu::CastingSlot::Gem11;
-		case CastingSlot::Gem12:
-			return EQEmu::CastingSlot::Gem12;
-		case CastingSlot::Discipline:
-			return EQEmu::CastingSlot::Discipline;
-		case CastingSlot::Item:
-			return EQEmu::CastingSlot::Item;
-		case CastingSlot::AltAbility:
-			return EQEmu::CastingSlot::AltAbility;
+		case spells::CastingSlot::Gem1:
+			return EQ::spells::CastingSlot::Gem1;
+		case spells::CastingSlot::Gem2:
+			return EQ::spells::CastingSlot::Gem2;
+		case spells::CastingSlot::Gem3:
+			return EQ::spells::CastingSlot::Gem3;
+		case spells::CastingSlot::Gem4:
+			return EQ::spells::CastingSlot::Gem4;
+		case spells::CastingSlot::Gem5:
+			return EQ::spells::CastingSlot::Gem5;
+		case spells::CastingSlot::Gem6:
+			return EQ::spells::CastingSlot::Gem6;
+		case spells::CastingSlot::Gem7:
+			return EQ::spells::CastingSlot::Gem7;
+		case spells::CastingSlot::Gem8:
+			return EQ::spells::CastingSlot::Gem8;
+		case spells::CastingSlot::Gem9:
+			return EQ::spells::CastingSlot::Gem9;
+		case spells::CastingSlot::Gem10:
+			return EQ::spells::CastingSlot::Gem10;
+		case spells::CastingSlot::Gem11:
+			return EQ::spells::CastingSlot::Gem11;
+		case spells::CastingSlot::Gem12:
+			return EQ::spells::CastingSlot::Gem12;
+		case spells::CastingSlot::Discipline:
+			return EQ::spells::CastingSlot::Discipline;
+		case spells::CastingSlot::Item:
+			return EQ::spells::CastingSlot::Item;
+		case spells::CastingSlot::AltAbility:
+			return EQ::spells::CastingSlot::AltAbility;
 		default: // we shouldn't have any issues with other slots ... just return something
-			return EQEmu::CastingSlot::Discipline;
+			return EQ::spells::CastingSlot::Discipline;
 		}
 	}
 
 	static inline int ServerToUFBuffSlot(int index)
 	{
 		// we're a disc
-		if (index >= EQEmu::constants::LongBuffs + EQEmu::constants::ShortBuffs)
-			return index - EQEmu::constants::LongBuffs - EQEmu::constants::ShortBuffs +
-			       constants::LongBuffs + constants::ShortBuffs;
+		if (index >= EQ::spells::LONG_BUFFS + EQ::spells::SHORT_BUFFS)
+			return index - EQ::spells::LONG_BUFFS - EQ::spells::SHORT_BUFFS +
+			       spells::LONG_BUFFS + spells::SHORT_BUFFS;
 		// we're a song
-		if (index >= EQEmu::constants::LongBuffs)
-			return index - EQEmu::constants::LongBuffs + constants::LongBuffs;
+		if (index >= EQ::spells::LONG_BUFFS)
+			return index - EQ::spells::LONG_BUFFS + spells::LONG_BUFFS;
 		// we're a normal buff
 		return index; // as long as we guard against bad slots server side, we should be fine
 	}
@@ -4457,12 +5229,12 @@ namespace UF
 	static inline int UFToServerBuffSlot(int index)
 	{
 		// we're a disc
-		if (index >= constants::LongBuffs + constants::ShortBuffs)
-			return index - constants::LongBuffs - constants::ShortBuffs + EQEmu::constants::LongBuffs +
-			       EQEmu::constants::ShortBuffs;
+		if (index >= spells::LONG_BUFFS + spells::SHORT_BUFFS)
+			return index - spells::LONG_BUFFS - spells::SHORT_BUFFS + EQ::spells::LONG_BUFFS +
+			       EQ::spells::SHORT_BUFFS;
 		// we're a song
-		if (index >= constants::LongBuffs)
-			return index - constants::LongBuffs + EQEmu::constants::LongBuffs;
+		if (index >= spells::LONG_BUFFS)
+			return index - spells::LONG_BUFFS + EQ::spells::LONG_BUFFS;
 		// we're a normal buff
 		return index; // as long as we guard against bad slots server side, we should be fine
 	}

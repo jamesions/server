@@ -40,13 +40,13 @@ public:
 	}
 
 	// Load the config
-	static bool LoadConfig() {
+	static bool LoadConfig(const std::string& path = "") {
 		if (_chat_config != nullptr)
 			delete _chat_config;
 		_chat_config=new queryservconfig;
 		_config=_chat_config;
 
-		return _config->ParseFile(EQEmuConfig::ConfigFile.c_str(),"server");
+		return _config->parseFile(path);
 	}
 
 };

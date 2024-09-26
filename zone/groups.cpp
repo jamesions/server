@@ -18,12 +18,14 @@
 
 #include "../common/global_define.h"
 #include "../common/eqemu_logsys.h"
+#include "expedition.h"
 #include "masterentity.h"
-#include "npc_ai.h"
-#include "../common/packet_functions.h"
-#include "../common/packet_dump.h"
-#include "../common/string_util.h"
 #include "worldserver.h"
+#include "string_ids.h"
+#include "../common/events/player_event_logs.h"
+#include "../common/repositories/group_id_repository.h"
+#include "../common/repositories/group_leaders_repository.h"
+
 
 extern EntityList entity_list;
 extern WorldServer worldserver;
@@ -32,7 +34,7 @@ extern WorldServer worldserver;
 note about how groups work:
 A group contains 2 list, a list of pointers to members and a
 list of member names. All members of a group should have their
-name in the membername array, whether they are in the zone or not.
+name in the member_name array, whether they are in the zone or not.
 Only members in this zone will have non-null pointers in the
 members array.
 */
@@ -113,263 +115,265 @@ Group::~Group()
 }
 
 //Split money used in OP_Split (/split and /autosplit).
-void Group::SplitMoney(uint32 copper, uint32 silver, uint32 gold, uint32 platinum, Client *splitter) {
-	//avoid unneeded work
-	if(copper == 0 && silver == 0 && gold == 0 && platinum == 0)
+void Group::SplitMoney(uint32 copper, uint32 silver, uint32 gold, uint32 platinum, Client *splitter, bool share)
+{
+	// Return early if no money to split.
+	if (!copper && !silver && !gold && !platinum) {
 		return;
+	}
 
-	uint32 i;
-	uint8 membercount = 0;
-	for (i = 0; i < MAX_GROUP_MEMBERS; i++) {
+	// splitter can not be nullptr
+	if (!splitter) {
+		return;
+	}
+
+	// find number of clients in group and check if splitter is in group
+
+	uint8 member_count      = 0;
+	bool  splitter_in_group = false;
+
+	for (uint32 i = 0; i < MAX_GROUP_MEMBERS; i++) {
 		// Don't split with Mercs or Bots
-		if (members[i] != nullptr && members[i]->IsClient()) {
-			membercount++;
+		if (members[i] && members[i]->IsClient()) {
+			member_count++;
+			if (members[i]->CastToClient() == splitter) {
+				splitter_in_group = true;
+			}
 		}
 	}
 
-	if (membercount == 0)
+	// Return if no group members found.
+	if (!member_count) {
 		return;
-
-	uint32 mod;
-	//try to handle round off error a little better
-	if(membercount > 1) {
-		mod = platinum % membercount;
-		if((mod) > 0) {
-			platinum -= mod;
-			gold += 10 * mod;
-		}
-		mod = gold % membercount;
-		if((mod) > 0) {
-			gold -= mod;
-			silver += 10 * mod;
-		}
-		mod = silver % membercount;
-		if((mod) > 0) {
-			silver -= mod;
-			copper += 10 * mod;
-		}
 	}
 
-	//calculate the splits
-	//We can still round off copper pieces, but I dont care
-	uint32 sc;
-	uint32 cpsplit = copper / membercount;
-	sc = copper % membercount;
-	uint32 spsplit = silver / membercount;
-	uint32 gpsplit = gold / membercount;
-	uint32 ppsplit = platinum / membercount;
+	// Splitter must be in group
+	if (!splitter_in_group) {
+		return;
+	}
 
-	char buf[128];
-	buf[63] = '\0';
-	std::string msg = "You receive";
-	bool one = false;
+	uint8 random_member = zone->random.Int(0, member_count - 1);
 
-	if(ppsplit > 0) {
-		snprintf(buf, 63, " %u platinum", ppsplit);
-		msg += buf;
-		one = true;
-	}
-	if(gpsplit > 0) {
-		if(one)
-			msg += ",";
-		snprintf(buf, 63, " %u gold", gpsplit);
-		msg += buf;
-		one = true;
-	}
-	if(spsplit > 0) {
-		if(one)
-			msg += ",";
-		snprintf(buf, 63, " %u silver", spsplit);
-		msg += buf;
-		one = true;
-	}
-	if(cpsplit > 0) {
-		if(one)
-			msg += ",";
-		//this message is not 100% accurate for the splitter
-		//if they are receiving any roundoff
-		snprintf(buf, 63, " %u copper", cpsplit);
-		msg += buf;
-		one = true;
-	}
-	msg += " as your split";
+	// Calculate split and remainder for each coin type
+	uint32 copper_split       = copper / member_count;
+	uint32 copper_remainder   = copper % member_count;
+	uint32 silver_split       = silver / member_count;
+	uint32 silver_remainder   = silver % member_count;
+	uint32 gold_split         = gold / member_count;
+	uint32 gold_remainder     = gold % member_count;
+	uint32 platinum_split     = platinum / member_count;
+	uint32 platinum_remainder = platinum % member_count;
 
-	for (i = 0; i < MAX_GROUP_MEMBERS; i++) {
-		if (members[i] != nullptr && members[i]->IsClient()) { // If Group Member is Client
-			Client *c = members[i]->CastToClient();
-			//I could not get MoneyOnCorpse to work, so we use this
-			c->AddMoneyToPP(cpsplit, spsplit, gpsplit, ppsplit, true);
-			c->Message(2, msg.c_str());
+	// Loop through the group members to split the coins.
+	for (const auto &m: members) {
+		if (m && m->IsClient()) {
+			Client *member_client = m->CastToClient();
+
+			uint32 receive_copper   = copper_split;
+			uint32 receive_silver   = silver_split;
+			uint32 receive_gold     = gold_split;
+			uint32 receive_platinum = platinum_split;
+
+			// if /split is used then splitter gets the remainder + split.
+			// if /autosplit is used then random players in the group will get the remainder + split.
+			if(share ? member_client == splitter : member_client == members[random_member]) {
+				receive_copper   += copper_remainder;
+				receive_silver   += silver_remainder;
+				receive_gold     += gold_remainder;
+				receive_platinum += platinum_remainder;
+			}
+
+			// the group member other than the character doing the /split only gets this message "(splitter) shares the money with the group"
+			if (share && member_client != splitter) {
+				member_client->MessageString(
+					YOU_RECEIVE_AS_SPLIT,
+					SHARE_MONEY,
+					splitter->GetCleanName()
+				);
+			}
+
+			// Check if there are any coins to add to the player's purse.
+			if (receive_copper || receive_silver || receive_gold || receive_platinum) {
+				member_client->AddMoneyToPP(receive_copper, receive_silver, receive_gold, receive_platinum, true);
+				member_client->MessageString(
+					Chat::MoneySplit,
+					YOU_RECEIVE_AS_SPLIT,
+					Strings::Money(receive_platinum, receive_gold, receive_silver, receive_copper).c_str()
+				);
+			}
+
+			// If logging of player money transactions is enabled, record the transaction.
+			if (player_event_logs.IsEventEnabled(PlayerEvent::SPLIT_MONEY)) {
+				auto e = PlayerEvent::SplitMoneyEvent{
+					.copper = receive_copper,
+					.silver = receive_silver,
+					.gold = receive_gold,
+					.platinum = receive_platinum,
+					.player_money_balance = member_client->GetCarriedMoney(),
+				};
+				RecordPlayerEventLogWithClient(member_client, PlayerEvent::SPLIT_MONEY, e);
+			}
 		}
 	}
 }
 
-bool Group::AddMember(Mob* newmember, const char *NewMemberName, uint32 CharacterID, bool ismerc)
+bool Group::AddMember(Mob* new_member, std::string new_member_name, uint32 character_id, bool is_merc)
 {
-	bool InZone = true;
+	bool in_zone = true;
 
 	// This method should either be passed a Mob*, if the new member is in this zone, or a nullptr Mob*
-	// and the name and CharacterID of the new member, if they are out of zone.
-	if(!newmember && !NewMemberName)
-	{
+	// and the name and character_id of the new member, if they are out of zone.
+	if (!new_member && new_member_name.empty()) {
 		return false;
 	}
 
-	if(GroupCount() >= MAX_GROUP_MEMBERS) //Sanity check for merging groups together.
-	{
+	if (GroupCount() >= MAX_GROUP_MEMBERS) { //Sanity check for merging groups together.
 		return false;
 	}
 
-	if(!newmember)
-	{
-		InZone = false;
-	}
-	else
-	{
-		NewMemberName = newmember->GetCleanName();
+	if (!new_member) {
+		in_zone = false;
+	} else {
+		new_member_name = new_member->GetCleanName();
 
-		if(newmember->IsClient())
-		{
-			CharacterID = newmember->CastToClient()->CharacterID();
+		if (new_member->IsClient()) {
+			character_id = new_member->CastToClient()->CharacterID();
 		}
-		if(newmember->IsMerc())
-		{
-			Client* owner = newmember->CastToMerc()->GetMercOwner();
-			if(owner)
-			{
-				CharacterID = owner->CastToClient()->CharacterID();
+
+		if (new_member->IsMerc()) {
+			Client* o = new_member->CastToMerc()->GetMercenaryOwner();
+			if (o) {
+				character_id = o->CastToClient()->CharacterID();
 			}
-			ismerc = true;
+
+			is_merc = true;
 		}
 	}
 
 	// See if they are already in the group
-	uint32 i = 0;
-	for (i = 0; i < MAX_GROUP_MEMBERS; ++i)
-	{
-		if(!strcasecmp(membername[i], NewMemberName))
-		{
+	for (const auto& m : membername) {
+		if (Strings::EqualFold(m, new_member_name)) {
 			return false;
 		}
 	}
 
 	// Put them in the group
-	for (i = 0; i < MAX_GROUP_MEMBERS; ++i)
-	{
-		if (membername[i][0] == '\0')
-		{
-			if(InZone)
-			{
-				members[i] = newmember;
+	for (int slot_id = 0; slot_id < MAX_GROUP_MEMBERS; ++slot_id) {
+		if (membername[slot_id][0] == '\0') {
+			if (in_zone) {
+				members[slot_id] = new_member;
 			}
-			strcpy(membername[i], NewMemberName);
-			MemberRoles[i] = 0;
+
+			strcpy(membername[slot_id], new_member_name.c_str());
+			MemberRoles[slot_id] = 0;
 			break;
 		}
 	}
 
-	// Is this even possible based on the above loops? Remove?
-	if (i == MAX_GROUP_MEMBERS)
-	{
-		return false;
-	}
-
-	int x=1;
+	int x = 1;
 
 	//build the template join packet
 	auto outapp = new EQApplicationPacket(OP_GroupUpdate, sizeof(GroupJoin_Struct));
-	GroupJoin_Struct* gj = (GroupJoin_Struct*) outapp->pBuffer;
-	strcpy(gj->membername, NewMemberName);
-	gj->action = groupActJoin;
+
+	auto gj = (GroupJoin_Struct*) outapp->pBuffer;
+
+	strcpy(gj->membername, new_member_name.c_str());
+
+	gj->action     = groupActJoin;
 	gj->leader_aas = LeaderAbilities;
 
-	for (i = 0;i < MAX_GROUP_MEMBERS; i++)
-	{
-		if (members[i] != nullptr && members[i] != newmember)
-		{
+	for (int slot_id = 0; slot_id < MAX_GROUP_MEMBERS; slot_id++) {
+		if (members[slot_id] && members[slot_id] != new_member) {
 			//fill in group join & send it
-			strcpy(gj->yourname, members[i]->GetCleanName());
-			if(members[i]->IsClient())
-			{
-				members[i]->CastToClient()->QueuePacket(outapp);
+			strcpy(gj->yourname, members[slot_id]->GetCleanName());
+			if (members[slot_id]->IsClient()) {
+				members[slot_id]->CastToClient()->QueuePacket(outapp);
 
 				//put new member into existing group members' list(s)
-				strcpy(members[i]->CastToClient()->GetPP().groupMembers[this->GroupCount()-1], NewMemberName);
+				strcpy(
+					members[slot_id]->CastToClient()->GetPP().groupMembers[GroupCount() - 1],
+					new_member_name.c_str()
+				);
 			}
 
 			//put existing group member(s) into the new member's list
-			if(InZone && newmember->IsClient())
-			{
-				if(IsLeader(members[i]))
-				{
-					strcpy(newmember->CastToClient()->GetPP().groupMembers[0], members[i]->GetCleanName());
-				}
-				else
-				{
-					strcpy(newmember->CastToClient()->GetPP().groupMembers[x], members[i]->GetCleanName());
-					x++;
+			if (in_zone && new_member && new_member->IsClient()) {
+				if (IsLeader(members[slot_id])) {
+					strcpy(new_member->CastToClient()->GetPP().groupMembers[0], members[slot_id]->GetCleanName());
+				} else {
+					strcpy(new_member->CastToClient()->GetPP().groupMembers[x], members[slot_id]->GetCleanName());
+					++x;
 				}
 			}
 		}
 	}
 
-	if(InZone)
-	{
+	if (in_zone && new_member) {
 		//put new member in his own list.
-		newmember->SetGrouped(true);
+		new_member->SetGrouped(true);
 
-		if(newmember->IsClient())
-		{
-			strcpy(newmember->CastToClient()->GetPP().groupMembers[x], NewMemberName);
-			newmember->CastToClient()->Save();
-			database.SetGroupID(NewMemberName, GetID(), newmember->CastToClient()->CharacterID(), false);
-			SendMarkedNPCsToMember(newmember->CastToClient());
+		if (new_member->IsClient()) {
+			strcpy(new_member->CastToClient()->GetPP().groupMembers[x], new_member_name.c_str());
 
-			NotifyMainTank(newmember->CastToClient(), 1);
-			NotifyMainAssist(newmember->CastToClient(), 1);
-			NotifyPuller(newmember->CastToClient(), 1);
+			new_member->CastToClient()->Save();
+
+			AddToGroup(new_member);
+
+			SendMarkedNPCsToMember(new_member->CastToClient());
+
+			NotifyMainTank(new_member->CastToClient(), 1);
+			NotifyMainAssist(new_member->CastToClient(), 1);
+			NotifyPuller(new_member->CastToClient(), 1);
 		}
 
-		if(newmember->IsMerc())
-		{
-			Client* owner = newmember->CastToMerc()->GetMercOwner();
-			if(owner)
-			{
-				database.SetGroupID(NewMemberName, GetID(), owner->CharacterID(), true);
+		if (new_member->IsMerc()) {
+			Client* o = new_member->CastToMerc()->GetMercenaryOwner();
+			if (o) {
+				AddToGroup(new_member);
 			}
 		}
-	}
-	else
-	{
-		database.SetGroupID(NewMemberName, GetID(), CharacterID, ismerc);
+
+		Group* g = new_member->CastToClient()->GetGroup();
+		if (g) {
+			g->SendHPManaEndPacketsTo(new_member);
+			g->SendHPPacketsFrom(new_member);
+		}
+
+	} else {
+		AddToGroup(
+			AddToGroupRequest{
+				.mob = nullptr,
+				.member_name = new_member_name,
+				.character_id = character_id,
+			}
+		);
 	}
 
-	if (newmember && newmember->IsClient())
-		newmember->CastToClient()->JoinGroupXTargets(this);
+	if (new_member && new_member->IsClient()) {
+		new_member->CastToClient()->JoinGroupXTargets(this);
+	}
 
 	safe_delete(outapp);
 
-#ifdef BOTS
-	Bot::UpdateGroupCastingRoles(this);
-#endif
+	if (RuleB(Bots, Enabled)) {
+		Bot::UpdateGroupCastingRoles(this);
+	}
 
 	return true;
 }
 
-void Group::AddMember(const char *NewMemberName)
+void Group::AddMember(const std::string& new_member_name)
 {
 	// This method should be called when both the new member and the group leader are in a different zone to this one.
-	for (uint32 i = 0; i < MAX_GROUP_MEMBERS; ++i)
-		if(!strcasecmp(membername[i], NewMemberName))
-		{
+	for (const auto& m : membername) {
+		if (Strings::EqualFold(m, new_member_name)) {
 			return;
 		}
+	}
 
-	for (uint32 i = 0; i < MAX_GROUP_MEMBERS; ++i)
-	{
-		if (membername[i][0] == '\0')
-		{
-			strcpy(membername[i], NewMemberName);
+	for (uint32 i = 0; i < MAX_GROUP_MEMBERS; ++i) {
+		if (membername[i][0] == '\0') {
+			strcpy(membername[i], new_member_name.c_str());
 			MemberRoles[i] = 0;
 			break;
 		}
@@ -387,31 +391,30 @@ void Group::QueuePacket(const EQApplicationPacket *app, bool ack_req)
 
 // Sends the rest of the group's hps to member. this is useful when someone
 // first joins a group, but otherwise there shouldn't be a need to call it
-void Group::SendHPPacketsTo(Mob *member)
+void Group::SendHPManaEndPacketsTo(Mob *member)
 {
-	if(member && member->IsClient())
-	{
+	if(member && member->IsClient()) {
 		EQApplicationPacket hpapp;
 		EQApplicationPacket outapp(OP_MobManaUpdate, sizeof(MobManaUpdate_Struct));
 
-		for (uint32 i = 0; i < MAX_GROUP_MEMBERS; i++)
-		{
-			if(members[i] && members[i] != member)
-			{
+		for (uint32 i = 0; i < MAX_GROUP_MEMBERS; i++) {
+			if(members[i] && members[i] != member) {
 				members[i]->CreateHPPacket(&hpapp);
 				member->CastToClient()->QueuePacket(&hpapp, false);
 				safe_delete_array(hpapp.pBuffer);
 				hpapp.size = 0;
-				if (member->CastToClient()->ClientVersion() >= EQEmu::versions::ClientVersion::SoD)
-				{
+
+				if (member->CastToClient()->ClientVersion() >= EQ::versions::ClientVersion::SoD) {
 					outapp.SetOpcode(OP_MobManaUpdate);
-					MobManaUpdate_Struct *mmus = (MobManaUpdate_Struct *)outapp.pBuffer;
-					mmus->spawn_id = members[i]->GetID();
-					mmus->mana = members[i]->GetManaPercent();
+
+					MobManaUpdate_Struct *mana_update = (MobManaUpdate_Struct *)outapp.pBuffer;
+					mana_update->spawn_id = members[i]->GetID();
+					mana_update->mana = members[i]->GetManaPercent();
 					member->CastToClient()->QueuePacket(&outapp, false);
-					MobEnduranceUpdate_Struct *meus = (MobEnduranceUpdate_Struct *)outapp.pBuffer;
+
+					MobEnduranceUpdate_Struct *endurance_update = (MobEnduranceUpdate_Struct *)outapp.pBuffer;
 					outapp.SetOpcode(OP_MobEnduranceUpdate);
-					meus->endurance = members[i]->GetEndurancePercent();
+					endurance_update->endurance = members[i]->GetEndurancePercent();
 					member->CastToClient()->QueuePacket(&outapp, false);
 				}
 			}
@@ -430,19 +433,58 @@ void Group::SendHPPacketsFrom(Mob *member)
 
 	uint32 i;
 	for(i = 0; i < MAX_GROUP_MEMBERS; i++) {
-		if(members[i] && members[i] != member && members[i]->IsClient())
-		{
+		if(members[i] && members[i] != member && members[i]->IsClient()) {
 			members[i]->CastToClient()->QueuePacket(&hp_app);
-			if (members[i]->CastToClient()->ClientVersion() >= EQEmu::versions::ClientVersion::SoD)
-			{
+			if (members[i]->CastToClient()->ClientVersion() >= EQ::versions::ClientVersion::SoD) {
 				outapp.SetOpcode(OP_MobManaUpdate);
-				MobManaUpdate_Struct *mmus = (MobManaUpdate_Struct *)outapp.pBuffer;
-				mmus->spawn_id = member->GetID();
-				mmus->mana = member->GetManaPercent();
+				MobManaUpdate_Struct *mana_update = (MobManaUpdate_Struct *)outapp.pBuffer;
+				mana_update->spawn_id = member->GetID();
+				mana_update->mana = member->GetManaPercent();
 				members[i]->CastToClient()->QueuePacket(&outapp, false);
-				MobEnduranceUpdate_Struct *meus = (MobEnduranceUpdate_Struct *)outapp.pBuffer;
+
+				MobEnduranceUpdate_Struct *endurance_update = (MobEnduranceUpdate_Struct *)outapp.pBuffer;
 				outapp.SetOpcode(OP_MobEnduranceUpdate);
-				meus->endurance = member->GetEndurancePercent();
+				endurance_update->endurance = member->GetEndurancePercent();
+				members[i]->CastToClient()->QueuePacket(&outapp, false);
+			}
+		}
+	}
+}
+
+void Group::SendManaPacketFrom(Mob *member)
+{
+	if (!member)
+		return;
+	EQApplicationPacket outapp(OP_MobManaUpdate, sizeof(MobManaUpdate_Struct));
+
+	uint32 i;
+	for (i = 0; i < MAX_GROUP_MEMBERS; i++) {
+		if (members[i] && members[i] != member && members[i]->IsClient()) {
+			if (members[i]->CastToClient()->ClientVersion() >= EQ::versions::ClientVersion::SoD) {
+				outapp.SetOpcode(OP_MobManaUpdate);
+				MobManaUpdate_Struct *mana_update = (MobManaUpdate_Struct *)outapp.pBuffer;
+				mana_update->spawn_id = member->GetID();
+				mana_update->mana = member->GetManaPercent();
+				members[i]->CastToClient()->QueuePacket(&outapp, false);
+			}
+		}
+	}
+}
+
+void Group::SendEndurancePacketFrom(Mob* member)
+{
+	if (!member)
+		return;
+
+	EQApplicationPacket outapp(OP_MobEnduranceUpdate, sizeof(MobManaUpdate_Struct));
+
+	uint32 i;
+	for (i = 0; i < MAX_GROUP_MEMBERS; i++) {
+		if (members[i] && members[i] != member && members[i]->IsClient()) {
+			if (members[i]->CastToClient()->ClientVersion() >= EQ::versions::ClientVersion::SoD) {
+				MobEnduranceUpdate_Struct *endurance_update = (MobEnduranceUpdate_Struct *)outapp.pBuffer;
+				endurance_update->spawn_id = member->GetID();
+				endurance_update->endurance = member->GetEndurancePercent();
 				members[i]->CastToClient()->QueuePacket(&outapp, false);
 			}
 		}
@@ -451,7 +493,10 @@ void Group::SendHPPacketsFrom(Mob *member)
 
 //updates a group member's client pointer when they zone in
 //if the group was in the zone already
-bool Group::UpdatePlayer(Mob* update){
+bool Group::UpdatePlayer(Mob* update) {
+
+	if (!update)
+		return false;
 
 	bool updateSuccess = false;
 
@@ -489,46 +534,54 @@ bool Group::UpdatePlayer(Mob* update){
 	if (update->IsClient() && !mentoree && mentoree_name.length() && !mentoree_name.compare(update->GetName()))
 		mentoree = update->CastToClient();
 
-#ifdef BOTS
-	Bot::UpdateGroupCastingRoles(this);
-#endif
+	if (RuleB(Bots, Enabled)) {
+		Bot::UpdateGroupCastingRoles(this);
+	}
 
 	return updateSuccess;
 }
 
-
 void Group::MemberZoned(Mob* removemob) {
-	uint32 i;
 
-	if (removemob == nullptr)
+	if (!removemob) {
 		return;
+	}
 
-	if(removemob == GetLeader())
+	if (removemob == GetLeader()) {
 		SetLeader(nullptr);
+	}
 
-	for (i = 0; i < MAX_GROUP_MEMBERS; i++) {
-		if (members[i] == removemob) {
-			members[i] = nullptr;
-			//should NOT clear the name, it is used for world communication.
-			break;
+	//should NOT clear the name, it is used for world communication.
+	for (auto & m : members) {
+		if (m) {
+			if (m->IsBot() && m->CastToBot()->GetBotOwner() && m->CastToBot()->GetBotOwner() == removemob) {
+				m = nullptr;
+			}
+			else if (m == removemob) {
+				m = nullptr;
+			}
 		}
 	}
 
-	if(removemob->IsClient() && HasRole(removemob, RoleAssist))
-		SetGroupAssistTarget(0);
+	if (removemob->IsClient() && HasRole(removemob, RoleAssist)) {
+		SetGroupAssistTarget(nullptr);
+	}
 
-	if(removemob->IsClient() && HasRole(removemob, RoleTank))
-		SetGroupTankTarget(0);
+	if (removemob->IsClient() && HasRole(removemob, RoleTank)) {
+		SetGroupTankTarget(nullptr);
+	}
 
-	if(removemob->IsClient() && HasRole(removemob, RolePuller))
-		SetGroupPullerTarget(0);
+	if (removemob->IsClient() && HasRole(removemob, RolePuller)) {
+		SetGroupPullerTarget(nullptr);
+	}
 
-	if (removemob->IsClient() && removemob == mentoree)
+	if (removemob->IsClient() && removemob == mentoree) {
 		mentoree = nullptr;
+	}
 
-#ifdef BOTS
-	Bot::UpdateGroupCastingRoles(this);
-#endif
+	if (RuleB(Bots, Enabled)) {
+		Bot::UpdateGroupCastingRoles(this);
+	}
 }
 
 void Group::SendGroupJoinOOZ(Mob* NewMember) {
@@ -537,7 +590,7 @@ void Group::SendGroupJoinOOZ(Mob* NewMember) {
 	{
 		return;
 	}
-	
+
 	if (!NewMember->HasGroup())
 	{
 		return;
@@ -565,7 +618,7 @@ bool Group::DelMemberOOZ(const char *Name) {
 		if(!strcasecmp(Name, membername[i]))
 			// This shouldn't be called if the member is in this zone.
 			if(!members[i]) {
-				if(!strncmp(GetLeaderName(), Name, 64))
+				if(!strncmp(GetLeaderName().c_str(), Name, 64))
 				{
 					//TODO: Transfer leadership if leader disbands OOZ.
 					UpdateGroupAAs();
@@ -576,7 +629,7 @@ bool Group::DelMemberOOZ(const char *Name) {
 				if(GroupCount() < 3)
 				{
 					UnDelegateMarkNPC(NPCMarkerName.c_str());
-					if (GetLeader() && GetLeader()->IsClient() && GetLeader()->CastToClient()->ClientVersion() < EQEmu::versions::ClientVersion::SoD) {
+					if (GetLeader() && GetLeader()->IsClient() && GetLeader()->CastToClient()->ClientVersion() < EQ::versions::ClientVersion::SoD) {
 							UnDelegateMainAssist(MainAssistName.c_str());
 					}
 					ClearAllNPCMarks();
@@ -637,7 +690,7 @@ bool Group::DelMember(Mob* oldmember, bool ignoresender)
 	{
 		for(uint32 nl = 0; nl < MAX_GROUP_MEMBERS; nl++)
 		{
-			if(members[nl]) 
+			if(members[nl])
 			{
 				if (members[nl]->IsClient())
 				{
@@ -647,8 +700,8 @@ bool Group::DelMember(Mob* oldmember, bool ignoresender)
 			}
 		}
 	}
-	
-	if (GetLeader() == nullptr)
+
+	if (GetLeaderName().empty())
 	{
 		DisbandGroup();
 		return true;
@@ -692,20 +745,20 @@ bool Group::DelMember(Mob* oldmember, bool ignoresender)
 		if(oldmember->IsClient())
 			oldmember->CastToClient()->QueuePacket(outapp);
 	}
-	
+
 	safe_delete(outapp);
 
 	if(oldmember->IsClient())
 	{
-		database.SetGroupID(oldmember->GetCleanName(), 0, oldmember->CastToClient()->CharacterID(), false);
+		RemoveFromGroup(oldmember);
 	}
-	
+
 	if(oldmember->IsMerc())
 	{
-		Client* owner = oldmember->CastToMerc()->GetMercOwner();
+		Client* owner = oldmember->CastToMerc()->GetMercenaryOwner();
 		if(owner)
 		{
-			database.SetGroupID(oldmember->GetCleanName(), 0, owner->CharacterID(), true);
+			RemoveFromGroup(oldmember);
 		}
 	}
 
@@ -741,20 +794,19 @@ bool Group::DelMember(Mob* oldmember, bool ignoresender)
 	if(GroupCount() < 3)
 	{
 		UnDelegateMarkNPC(NPCMarkerName.c_str());
-		if (GetLeader() && GetLeader()->IsClient() && GetLeader()->CastToClient()->ClientVersion() < EQEmu::versions::ClientVersion::SoD) {
+		if (GetLeader() && GetLeader()->IsClient() && GetLeader()->CastToClient()->ClientVersion() < EQ::versions::ClientVersion::SoD) {
 			UnDelegateMainAssist(MainAssistName.c_str());
 		}
 		ClearAllNPCMarks();
 	}
 
-#ifdef BOTS
-	Bot::UpdateGroupCastingRoles(this);
-#endif
+	if (RuleB(Bots, Enabled)) {
+		Bot::UpdateGroupCastingRoles(this);
+	}
 
 	return true;
 }
 
-// does the caster + group
 void Group::CastGroupSpell(Mob* caster, uint16 spell_id) {
 	uint32 z;
 	float range, distance;
@@ -768,14 +820,12 @@ void Group::CastGroupSpell(Mob* caster, uint16 spell_id) {
 	float range2 = range*range;
 	float min_range2 = spells[spell_id].min_range * spells[spell_id].min_range;
 
-//	caster->SpellOnTarget(spell_id, caster);
-
 	for(z=0; z < MAX_GROUP_MEMBERS; z++)
 	{
 		if(members[z] == caster) {
 			caster->SpellOnTarget(spell_id, caster);
 #ifdef GROUP_BUFF_PETS
-			if(spells[spell_id].targettype != ST_GroupNoPets && caster->GetPet() && caster->HasPetAffinity() && !caster->GetPet()->IsCharmed())
+			if(spells[spell_id].target_type != ST_GroupNoPets && caster->GetPet() && caster->HasPetAffinity() && !caster->GetPet()->IsCharmed())
 				caster->SpellOnTarget(spell_id, caster->GetPet());
 #endif
 		}
@@ -786,11 +836,11 @@ void Group::CastGroupSpell(Mob* caster, uint16 spell_id) {
 				members[z]->CalcSpellPowerDistanceMod(spell_id, distance);
 				caster->SpellOnTarget(spell_id, members[z]);
 #ifdef GROUP_BUFF_PETS
-				if(spells[spell_id].targettype != ST_GroupNoPets && members[z]->GetPet() && members[z]->HasPetAffinity() && !members[z]->GetPet()->IsCharmed())
+				if(spells[spell_id].target_type != ST_GroupNoPets && members[z]->GetPet() && members[z]->HasPetAffinity() && !members[z]->GetPet()->IsCharmed())
 					caster->SpellOnTarget(spell_id, members[z]->GetPet());
 #endif
 			} else
-				Log.Out(Logs::Detail, Logs::Spells, "Group spell: %s is out of range %f at distance %f from %s", members[z]->GetName(), range, distance, caster->GetName());
+				LogSpells("Group spell: [{}] is out of range [{}] at distance [{}] from [{}]", members[z]->GetName(), range, distance, caster->GetName());
 		}
 	}
 
@@ -798,62 +848,28 @@ void Group::CastGroupSpell(Mob* caster, uint16 spell_id) {
 	disbandcheck = true;
 }
 
-// does the caster + group
-void Group::GroupBardPulse(Mob* caster, uint16 spell_id) {
-	uint32 z;
-	float range, distance;
-
-	if(!caster)
-		return;
-
-	castspell = true;
-	range = caster->GetAOERange(spell_id);
-
-	float range2 = range*range;
-
-	for(z=0; z < MAX_GROUP_MEMBERS; z++) {
-		if(members[z] == caster) {
-			caster->BardPulse(spell_id, caster);
-#ifdef GROUP_BUFF_PETS
-			if(caster->GetPet() && caster->HasPetAffinity() && !caster->GetPet()->IsCharmed())
-				caster->BardPulse(spell_id, caster->GetPet());
-#endif
-		}
-		else if(members[z] != nullptr)
-		{
-			distance = DistanceSquared(caster->GetPosition(), members[z]->GetPosition());
-			if(distance <= range2) {
-				members[z]->BardPulse(spell_id, caster);
-#ifdef GROUP_BUFF_PETS
-				if(members[z]->GetPet() && members[z]->HasPetAffinity() && !members[z]->GetPet()->IsCharmed())
-					members[z]->GetPet()->BardPulse(spell_id, caster);
-#endif
-			} else
-				Log.Out(Logs::Detail, Logs::Spells, "Group bard pulse: %s is out of range %f at distance %f from %s", members[z]->GetName(), range, distance, caster->GetName());
-		}
-	}
-}
-
-bool Group::IsGroupMember(Mob* client)
+bool Group::IsGroupMember(Mob* c)
 {
-	bool Result = false;
-
-	if(client) {
-		for (uint32 i = 0; i < MAX_GROUP_MEMBERS; i++) {
-			if (members[i] == client)
-				Result = true;
-		}
-	}
-
-	return Result;
-}
-
-bool Group::IsGroupMember(const char *Name)
-{
-	if(Name)
-		for(uint32 i = 0; i < MAX_GROUP_MEMBERS; i++)
-			if((strlen(Name) == strlen(membername[i])) && !strncmp(membername[i], Name, strlen(Name)))
+	if (c) {
+		for (const auto &m: members) {
+			if (m == c) {
 				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+bool Group::IsGroupMember(const char *name)
+{
+	if (name) {
+		for (const auto& m : membername) {
+			if (!strcmp(m, name)) {
+				return true;
+			}
+		}
+	}
 
 	return false;
 }
@@ -865,7 +881,7 @@ void Group::GroupMessage(Mob* sender, uint8 language, uint8 lang_skill, const ch
 			continue;
 
 		if (members[i]->IsClient() && members[i]->CastToClient()->GetFilter(FilterGroupChat)!=0)
-			members[i]->CastToClient()->ChannelMessageSend(sender->GetName(),members[i]->GetName(),2,language,lang_skill,message);
+			members[i]->CastToClient()->ChannelMessageSend(sender->GetName(),members[i]->GetName(),ChatChannel_Group,language,lang_skill,message);
 	}
 
 	auto pack =
@@ -894,9 +910,9 @@ uint32 Group::GetTotalGroupDamage(Mob* other) {
 }
 
 void Group::DisbandGroup(bool joinraid) {
-#ifdef BOTS
-	Bot::UpdateGroupCastingRoles(this, true);
-#endif
+	if (RuleB(Bots, Enabled)) {
+		Bot::UpdateGroupCastingRoles(this, true);
+	}
 
 	auto outapp = new EQApplicationPacket(OP_GroupUpdate, sizeof(GroupUpdate_Struct));
 
@@ -910,6 +926,7 @@ void Group::DisbandGroup(bool joinraid) {
 	{
 		if (members[i] == nullptr)
 		{
+			membername[i][0] = '\0';
 			continue;
 		}
 
@@ -921,19 +938,19 @@ void Group::DisbandGroup(bool joinraid) {
 			}
 
 			strcpy(gu->yourname, members[i]->GetCleanName());
-			database.SetGroupID(members[i]->GetCleanName(), 0, members[i]->CastToClient()->CharacterID(), false);
+			RemoveFromGroup(members[i]);
 			members[i]->CastToClient()->QueuePacket(outapp);
 			SendMarkedNPCsToMember(members[i]->CastToClient(), true);
 			if (!joinraid)
 				members[i]->CastToClient()->LeaveGroupXTargets(this);
 		}
-		
+
 		if (members[i]->IsMerc())
 		{
-			Client* owner = members[i]->CastToMerc()->GetMercOwner();
+			Client* owner = members[i]->CastToMerc()->GetMercenaryOwner();
 			if(owner)
 			{
-				database.SetGroupID(members[i]->GetCleanName(), 0, owner->CharacterID(), true);
+				RemoveFromGroup(members[i]);
 			}
 		}
 
@@ -957,14 +974,14 @@ void Group::DisbandGroup(bool joinraid) {
 		database.ClearGroup(GetID());
 	}
 
-	entity_list.RemoveGroup(GetID());
-
 	if(Leader && (Leader->IsLFP()))
 	{
 		Leader->UpdateLFP();
 	}
 
+	SetLeader(nullptr);
 	safe_delete(outapp);
+	entity_list.RemoveGroup(GetID());
 }
 
 void Group::GetMemberList(std::list<Mob*>& member_list, bool clear_list)
@@ -989,7 +1006,6 @@ void Group::GetClientList(std::list<Client*>& client_list, bool clear_list)
 	}
 }
 
-#ifdef BOTS
 void Group::GetBotList(std::list<Bot*>& bot_list, bool clear_list)
 {
 	if (clear_list)
@@ -1000,7 +1016,6 @@ void Group::GetBotList(std::list<Bot*>& bot_list, bool clear_list)
 			bot_list.push_back(bot_iter->CastToBot());
 	}
 }
-#endif
 
 bool Group::Process() {
 	if(disbandcheck && !GroupCount())
@@ -1127,27 +1142,50 @@ void Group::TeleportGroup(Mob* sender, uint32 zoneID, uint16 instance_id, float 
 }
 
 bool Group::LearnMembers() {
-	std::string query = StringFormat("SELECT name FROM group_id WHERE groupid = %lu", (unsigned long)GetID());
-	auto results = database.QueryDatabase(query);
-	if (!results.Success())
-        return false;
 
-    if (results.RowCount() == 0) {
-        Log.Out(Logs::General, Logs::Error, "Error getting group members for group %lu: %s", (unsigned long)GetID(), results.ErrorMessage().c_str());
-			return false;
-    }
+	const auto& l = GroupIdRepository::GetWhere(
+		database,
+		fmt::format(
+			"`group_id` = {}",
+			GetID()
+		)
+	);
 
-	int memberIndex = 0;
-    for(auto row = results.begin(); row != results.end(); ++row) {
-		if(!row[0])
-			continue;
-
-		members[memberIndex] = nullptr;
-		strn0cpy(membername[memberIndex], row[0], 64);
-
-		memberIndex++;
+	if (l.empty()) {
+		LogError(
+			"Error getting group members for group [{}]",
+			GetID()
+		);
 	}
 
+	for (int i = 0; i < MAX_GROUP_MEMBERS; ++i) {
+		members[i] = nullptr;
+		memset(membername[i], 0, 64);
+		MemberRoles[i] = 0;
+	}
+
+	int member_index = 0;
+	for (const auto& e : l) {
+		if (member_index >= MAX_GROUP_MEMBERS) {
+			LogError(
+				"Too many members in group [{}]",
+				GetID()
+			);
+			break;
+		}
+
+		if (e.name.empty()) {
+			members[member_index] = nullptr;
+			membername[member_index][0] = '\0';
+		} else {
+			members[member_index] = nullptr;
+			strn0cpy(membername[member_index], e.name.c_str(), 64);
+		}
+
+		++member_index;
+	}
+
+	VerifyGroup();
 	return true;
 }
 
@@ -1158,40 +1196,26 @@ void Group::VerifyGroup() {
 		Only called every once in a while (on member re-join for now).
 	*/
 
-	uint32 i;
-	for (i = 0; i < MAX_GROUP_MEMBERS; i++) {
+	for (uint32 i = 0; i < MAX_GROUP_MEMBERS; i++) {
 		if (membername[i][0] == '\0') {
-#if EQDEBUG >= 7
-	Log.Out(Logs::General, Logs::None, "Group %lu: Verify %d: Empty.\n", (unsigned long)GetID(), i);
-#endif
 			members[i] = nullptr;
 			continue;
 		}
 
 		Mob *them = entity_list.GetMob(membername[i]);
-		if(them == nullptr && members[i] != nullptr) {	//they aren't in zone
-#if EQDEBUG >= 6
-		Log.Out(Logs::General, Logs::None, "Member of group %lu named '%s' has disappeared!!", (unsigned long)GetID(), membername[i]);
-#endif
-			membername[i][0] = '\0';
+		if (!them && members[i]) {	//they aren't in zone
 			members[i] = nullptr;
 			continue;
 		}
 
-		if(them != nullptr && members[i] != them) {	//our pointer is out of date... not so good.
-#if EQDEBUG >= 5
-		Log.Out(Logs::General, Logs::None, "Member of group %lu named '%s' had an out of date pointer!!", (unsigned long)GetID(), membername[i]);
-#endif
+		if (them != nullptr && members[i] != them) {	//our pointer is out of date... not so good.
 			members[i] = them;
 			continue;
 		}
-#if EQDEBUG >= 8
-		Log.Out(Logs::General, Logs::None, "Member of group %lu named '%s' is valid.", (unsigned long)GetID(), membername[i]);
-#endif
 	}
 }
 
-void Group::GroupMessage_StringID(Mob* sender, uint32 type, uint32 string_id, const char* message,const char* message2,const char* message3,const char* message4,const char* message5,const char* message6,const char* message7,const char* message8,const char* message9, uint32 distance) {
+void Group::GroupMessageString(Mob* sender, uint32 type, uint32 string_id, const char* message,const char* message2,const char* message3,const char* message4,const char* message5,const char* message6,const char* message7,const char* message8,const char* message9, uint32 distance) {
 	uint32 i;
 	for (i = 0; i < MAX_GROUP_MEMBERS; i++) {
 		if(members[i] == nullptr)
@@ -1199,11 +1223,11 @@ void Group::GroupMessage_StringID(Mob* sender, uint32 type, uint32 string_id, co
 
 		if(members[i] == sender)
 			continue;
-			
+
 		if(!members[i]->IsClient())
 			continue;
 
-		members[i]->Message_StringID(type, string_id, message, message2, message3, message4, message5, message6, message7, message8, message9, 0);
+		members[i]->MessageString(type, string_id, message, message2, message3, message4, message5, message6, message7, message8, message9, 0);
 	}
 }
 
@@ -1218,7 +1242,7 @@ void Client::LeaveGroup() {
 		{
 			MemberCount -= 1;
 		}
-		
+
 		if(MemberCount < 3)
 		{
 			g->DisbandGroup();
@@ -1235,10 +1259,10 @@ void Client::LeaveGroup() {
 	else
 	{
 		//force things a little
-		database.SetGroupID(GetCleanName(), 0, CharacterID(), false);
-		if (GetMerc())
-		{
-			database.SetGroupID(GetMerc()->GetCleanName(), 0, CharacterID(), true);
+		Group::RemoveFromGroup(this);
+
+		if (GetMerc()) {
+			Group::RemoveFromGroup(GetMerc());
 		}
 	}
 
@@ -1291,7 +1315,7 @@ void Group::BalanceHP(int32 penalty, float range, Mob* caster, int32 limit)
 	if (!range)
 		range = 200;
 
-	int dmgtaken = 0, numMem = 0, dmgtaken_tmp = 0;
+	int64 dmgtaken = 0, numMem = 0, dmgtaken_tmp = 0;
 
 	float distance;
 	float range2 = range*range;
@@ -1521,7 +1545,7 @@ void Group::DelegateMainTank(const char *NewMainTankName, uint8 toggle)
                                         MainTankName.c_str(), GetID());
         auto results = database.QueryDatabase(query);
 		if (!results.Success())
-			Log.Out(Logs::General, Logs::Error, "Unable to set group main tank: %s\n", results.ErrorMessage().c_str());
+			LogError("Unable to set group main tank: [{}]\n", results.ErrorMessage().c_str());
 	}
 }
 
@@ -1567,7 +1591,7 @@ void Group::DelegateMainAssist(const char *NewMainAssistName, uint8 toggle)
                                         MainAssistName.c_str(), GetID());
         auto results = database.QueryDatabase(query);
 		if (!results.Success())
-			Log.Out(Logs::General, Logs::Error, "Unable to set group main assist: %s\n", results.ErrorMessage().c_str());
+			LogError("Unable to set group main assist: [{}]\n", results.ErrorMessage().c_str());
 
 	}
 }
@@ -1614,7 +1638,7 @@ void Group::DelegatePuller(const char *NewPullerName, uint8 toggle)
                                         PullerName.c_str(), GetID());
         auto results = database.QueryDatabase(query);
 		if (!results.Success())
-			Log.Out(Logs::General, Logs::Error, "Unable to set group main puller: %s\n", results.ErrorMessage().c_str());
+			LogError("Unable to set group main puller: [{}]\n", results.ErrorMessage().c_str());
 
 	}
 
@@ -1632,12 +1656,12 @@ void Group::NotifyMainTank(Client *c, uint8 toggle)
 	if(!MainTankName.size())
 		return;
 
-	if (c->ClientVersion() < EQEmu::versions::ClientVersion::SoD)
+	if (c->ClientVersion() < EQ::versions::ClientVersion::SoD)
 	{
 		if(toggle)
-			c->Message(0, "%s is now Main Tank.", MainTankName.c_str());
+			c->Message(Chat::White, "%s is now Main Tank.", MainTankName.c_str());
 		else
-			c->Message(0, "%s is no longer Main Tank.", MainTankName.c_str());
+			c->Message(Chat::White, "%s is no longer Main Tank.", MainTankName.c_str());
 	}
 	else
 	{
@@ -1647,7 +1671,7 @@ void Group::NotifyMainTank(Client *c, uint8 toggle)
 
 		strn0cpy(grs->Name1, MainTankName.c_str(), sizeof(grs->Name1));
 
-		strn0cpy(grs->Name2, GetLeaderName(), sizeof(grs->Name2));
+		strn0cpy(grs->Name2, GetLeaderName().c_str(), sizeof(grs->Name2));
 
 		grs->RoleNumber = 1;
 
@@ -1672,7 +1696,7 @@ void Group::NotifyMainAssist(Client *c, uint8 toggle)
 	if(!MainAssistName.size())
 		return;
 
-	if (c->ClientVersion() < EQEmu::versions::ClientVersion::SoD)
+	if (c->ClientVersion() < EQ::versions::ClientVersion::SoD)
 	{
 		auto outapp = new EQApplicationPacket(OP_DelegateAbility, sizeof(DelegateAbility_Struct));
 
@@ -1700,7 +1724,7 @@ void Group::NotifyMainAssist(Client *c, uint8 toggle)
 
 		strn0cpy(grs->Name1, MainAssistName.c_str(), sizeof(grs->Name1));
 
-		strn0cpy(grs->Name2, GetLeaderName(), sizeof(grs->Name2));
+		strn0cpy(grs->Name2, GetLeaderName().c_str(), sizeof(grs->Name2));
 
 		grs->RoleNumber = 2;
 
@@ -1727,12 +1751,12 @@ void Group::NotifyPuller(Client *c, uint8 toggle)
 	if(!PullerName.size())
 		return;
 
-	if (c->ClientVersion() < EQEmu::versions::ClientVersion::SoD)
+	if (c->ClientVersion() < EQ::versions::ClientVersion::SoD)
 	{
 		if(toggle)
-			c->Message(0, "%s is now Puller.", PullerName.c_str());
+			c->Message(Chat::White, "%s is now Puller.", PullerName.c_str());
 		else
-			c->Message(0, "%s is no longer Puller.", PullerName.c_str());
+			c->Message(Chat::White, "%s is no longer Puller.", PullerName.c_str());
 	}
 	else
 	{
@@ -1742,7 +1766,7 @@ void Group::NotifyPuller(Client *c, uint8 toggle)
 
 		strn0cpy(grs->Name1, PullerName.c_str(), sizeof(grs->Name1));
 
-		strn0cpy(grs->Name2, GetLeaderName(), sizeof(grs->Name2));
+		strn0cpy(grs->Name2, GetLeaderName().c_str(), sizeof(grs->Name2));
 
 		grs->RoleNumber = 3;
 
@@ -1765,7 +1789,7 @@ void Group::UnDelegateMainTank(const char *OldMainTankName, uint8 toggle)
 		std::string query = StringFormat("UPDATE group_leaders SET maintank = '' WHERE gid = %i LIMIT 1", GetID());
 		auto results = database.QueryDatabase(query);
 		if (!results.Success())
-			Log.Out(Logs::General, Logs::Error, "Unable to clear group main tank: %s\n", results.ErrorMessage().c_str());
+			LogError("Unable to clear group main tank: [{}]\n", results.ErrorMessage().c_str());
 
 		if(!toggle) {
 			for(uint32 i = 0; i < MAX_GROUP_MEMBERS; ++i) {
@@ -1814,7 +1838,7 @@ void Group::UnDelegateMainAssist(const char *OldMainAssistName, uint8 toggle)
 		std::string query = StringFormat("UPDATE group_leaders SET assist = '' WHERE gid = %i LIMIT 1", GetID());
         auto results = database.QueryDatabase(query);
 		if (!results.Success())
-			Log.Out(Logs::General, Logs::Error, "Unable to clear group main assist: %s\n", results.ErrorMessage().c_str());
+			LogError("Unable to clear group main assist: [{}]\n", results.ErrorMessage().c_str());
 
 		if(!toggle)
 		{
@@ -1842,7 +1866,7 @@ void Group::UnDelegatePuller(const char *OldPullerName, uint8 toggle)
 		std::string query = StringFormat("UPDATE group_leaders SET puller = '' WHERE gid = %i LIMIT 1", GetID());
         auto results = database.QueryDatabase(query);
 		if (!results.Success())
-			Log.Out(Logs::General, Logs::Error, "Unable to clear group main puller: %s\n", results.ErrorMessage().c_str());
+			LogError("Unable to clear group main puller: [{}]\n", results.ErrorMessage().c_str());
 
 		if(!toggle) {
 			for(uint32 i = 0; i < MAX_GROUP_MEMBERS; ++i) {
@@ -1925,7 +1949,7 @@ void Group::SetGroupMentor(int percent, char *name)
 			mentoree_name.c_str(), mentor_percent, GetID());
 	auto results = database.QueryDatabase(query);
 	if (!results.Success())
-		Log.Out(Logs::General, Logs::Error, "Unable to set group mentor: %s\n", results.ErrorMessage().c_str());
+		LogError("Unable to set group mentor: [{}]\n", results.ErrorMessage().c_str());
 }
 
 void Group::ClearGroupMentor()
@@ -1936,7 +1960,7 @@ void Group::ClearGroupMentor()
 	std::string query = StringFormat("UPDATE group_leaders SET mentoree = '', mentor_percent = 0 WHERE gid = %i LIMIT 1", GetID());
 	auto results = database.QueryDatabase(query);
 	if (!results.Success())
-		Log.Out(Logs::General, Logs::Error, "Unable to clear group mentor: %s\n", results.ErrorMessage().c_str());
+		LogError("Unable to clear group mentor: [{}]\n", results.ErrorMessage().c_str());
 }
 
 void Group::NotifyAssistTarget(Client *c)
@@ -2006,7 +2030,7 @@ void Group::DelegateMarkNPC(const char *NewNPCMarkerName)
                                     NewNPCMarkerName, GetID());
     auto results = database.QueryDatabase(query);
 	if (!results.Success())
-		Log.Out(Logs::General, Logs::Error, "Unable to set group mark npc: %s\n", results.ErrorMessage().c_str());
+		LogError("Unable to set group mark npc: [{}]\n", results.ErrorMessage().c_str());
 }
 
 void Group::NotifyMarkNPC(Client *c)
@@ -2087,25 +2111,21 @@ void Group::UnDelegateMarkNPC(const char *OldNPCMarkerName)
 	std::string query = StringFormat("UPDATE group_leaders SET marknpc = '' WHERE gid = %i LIMIT 1", GetID());
     auto results = database.QueryDatabase(query);
 	if (!results.Success())
-		Log.Out(Logs::General, Logs::Error, "Unable to clear group marknpc: %s\n", results.ErrorMessage().c_str());
+		LogError("Unable to clear group marknpc: [{}]\n", results.ErrorMessage().c_str());
 
 }
 
 void Group::SaveGroupLeaderAA()
 {
-	// Stores the Group Leaders Leadership AA data from the Player Profile as a blob in the group_leaders table.
-	// This is done so that group members not in the same zone as the Leader still have access to this information.
-	auto queryBuffer = new char[sizeof(GroupLeadershipAA_Struct) * 2 + 1];
-	database.DoEscapeString(queryBuffer, (char *)&LeaderAbilities, sizeof(GroupLeadershipAA_Struct));
+    // Stores the Group Leaders Leadership AA data from the Player Profile as a blob in the group_leaders table.
+    // This is done so that group members not in the same zone as the Leader still have access to this information.
 
-	std::string query = "UPDATE group_leaders SET leadershipaa = '";
-	query += queryBuffer;
-	query +=  StringFormat("' WHERE gid = %i LIMIT 1", GetID());
-	safe_delete_array(queryBuffer);
-    auto results = database.QueryDatabase(query);
-	if (!results.Success())
-		Log.Out(Logs::General, Logs::Error, "Unable to store LeadershipAA: %s\n", results.ErrorMessage().c_str());
+    std::string aa((char *) &LeaderAbilities, sizeof(GroupLeadershipAA_Struct));
+    auto        results = GroupLeadersRepository::UpdateLeadershipAA(database, aa, GetID());
 
+	if (!results) {
+        LogError("Unable to store GroupLeadershipAA for group_id: [{}]", GetID());
+    }
 }
 
 void Group::UnMarkNPC(uint16 ID)
@@ -2293,7 +2313,7 @@ void Group::ChangeLeader(Mob* newleader)
 	for (uint32 i = 0; i < MAX_GROUP_MEMBERS; i++) {
 		if (members[i] && members[i]->IsClient())
 		{
-			if (members[i]->CastToClient()->ClientVersion() >= EQEmu::versions::ClientVersion::SoD)
+			if (members[i]->CastToClient()->ClientVersion() >= EQ::versions::ClientVersion::SoD)
 				members[i]->CastToClient()->SendGroupLeaderChangePacket(newleader->GetName());
 
 			members[i]->CastToClient()->QueuePacket(outapp);
@@ -2316,7 +2336,6 @@ void Group::UpdateXTargetMarkedNPC(uint32 Number, Mob *m)
 			members[i]->CastToClient()->UpdateXTargetType((Number == 1) ? GroupMarkTarget1 : ((Number == 2) ? GroupMarkTarget2 : GroupMarkTarget3), m);
 		}
 	}
-
 }
 
 void Group::SetDirtyAutoHaters()
@@ -2402,7 +2421,7 @@ bool Group::AmIPuller(const char *mob_name)
 {
 	if (!mob_name)
 		return false;
-	
+
 	return !((bool)PullerName.compare(mob_name));
 }
 
@@ -2419,3 +2438,136 @@ bool Group::HasRole(Mob *m, uint8 Role)
 	return false;
 }
 
+void Group::QueueClients(Mob *sender, const EQApplicationPacket *app, bool ack_required /*= true*/, bool ignore_sender /*= true*/, float distance /*= 0*/) {
+	if (sender && sender->IsClient()) {
+		for (uint32 i = 0; i < MAX_GROUP_MEMBERS; i++) {
+
+			if (!members[i])
+				continue;
+
+			if (!members[i]->IsClient())
+				continue;
+
+			if (ignore_sender && members[i] == sender)
+				continue;
+
+			/* If we don't have a distance requirement - send to all members */
+			if (distance == 0) {
+				members[i]->CastToClient()->QueuePacket(app, ack_required);
+			}
+			else {
+				/* If negative distance - we check if current distance is greater than X */
+				if (distance <= 0 && DistanceSquared(sender->GetPosition(), members[i]->GetPosition()) >= (distance * distance)) {
+					members[i]->CastToClient()->QueuePacket(app, ack_required);
+				}
+				/* If positive distance - we check if current distance is less than X */
+				else if (distance >= 0 && DistanceSquared(sender->GetPosition(), members[i]->GetPosition()) <= (distance * distance)) {
+					members[i]->CastToClient()->QueuePacket(app, ack_required);
+				}
+			}
+		}
+	}
+}
+
+bool Group::DoesAnyMemberHaveExpeditionLockout(
+	const std::string& expedition_name, const std::string& event_name, int max_check_count)
+{
+	if (max_check_count <= 0)
+	{
+		max_check_count = MAX_GROUP_MEMBERS;
+	}
+
+	for (int i = 0; i < MAX_GROUP_MEMBERS && i < max_check_count; ++i)
+	{
+		if (membername[i][0])
+		{
+			if (Expedition::HasLockoutByCharacterName(membername[i], expedition_name, event_name))
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+bool Group::IsLeader(const char* name) {
+	if (name) {
+		for (const auto& m : membername) {
+			if (!strcmp(m, name)) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+std::string Group::GetLeaderName() {
+	return database.GetGroupLeaderName(GetID());
+}
+
+void Group::RemoveFromGroup(Mob* m)
+{
+	uint32      bot_id       = 0;
+	uint32      character_id = 0;
+	uint32      merc_id      = 0;
+
+	if (m->IsBot()) {
+		bot_id = m->CastToBot()->GetBotID();
+	} else if (m->IsClient()) {
+		character_id = m->CastToClient()->CharacterID();
+	} else if (m->IsMerc()) {
+		merc_id = m->CastToMerc()->GetMercenaryID();
+	}
+
+	GroupIdRepository::DeleteWhere(
+		database,
+		fmt::format(
+			"`character_id` = {} AND `bot_id` = {} AND `merc_id` = {}",
+			character_id,
+			bot_id,
+			merc_id
+		)
+	);
+}
+
+void Group::AddToGroup(Mob* m)
+{
+	AddToGroup(
+		AddToGroupRequest{
+			.mob = m
+		}
+	);
+}
+
+// Handles database-side, should eventually be consolidated to handle memory-based group stuff as well
+void Group::AddToGroup(AddToGroupRequest r)
+{
+	uint32      bot_id       = 0;
+	uint32      character_id = r.character_id;
+	uint32      merc_id      = 0;
+	std::string name         = r.member_name;
+
+	if (r.mob) {
+		if (r.mob->IsBot()) {
+			bot_id = r.mob->CastToBot()->GetBotID();
+		} else if (r.mob->IsClient()) {
+			character_id = r.mob->CastToClient()->CharacterID();
+		} else if (r.mob->IsMerc()) {
+			merc_id = r.mob->CastToMerc()->GetMercenaryID();
+		}
+
+		name = r.mob->GetCleanName();
+	}
+
+	GroupIdRepository::ReplaceOne(
+		database,
+		GroupIdRepository::GroupId{
+			.group_id = GetID(),
+			.name = name,
+			.character_id = character_id,
+			.bot_id = bot_id,
+			.merc_id = merc_id
+		}
+	);
+}

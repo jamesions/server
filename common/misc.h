@@ -15,15 +15,6 @@ bool ItemParse(const char *data, int length, std::map<int,std::map<int,std::stri
 
 int Tokenize(std::string s, std::map<int,std::string> & tokens, char delim='|');
 
-void LoadItemDBFieldNames();
-
-void encode_length(unsigned long length, char *out);
-unsigned long decode_length(char *in);
-unsigned long encode(char *in, unsigned long length, char *out);
-void decode(char *in, char *out);
-void encode_chunk(char *in, int len, char *out);
-void decode_chunk(char *in, char *out);
-
 #ifndef WIN32
 int print_stacktrace();
 #endif

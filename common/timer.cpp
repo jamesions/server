@@ -16,7 +16,6 @@
 	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 */
 
-
 // Disgrace: for windows compile
 #ifndef WIN32
 	#include <sys/time.h>
@@ -129,12 +128,15 @@ void Timer::SetTimer(uint32 set_timer_time) {
 	}
 }
 
-uint32 Timer::GetRemainingTime() {
+uint32 Timer::GetRemainingTime() const
+{
 	if (enabled) {
-		if (current_time-start_time > timer_time)
+		if (current_time - start_time > timer_time) {
 			return 0;
-		else
+		}
+		else {
 			return (start_time + timer_time) - current_time;
+		}
 	}
 	else {
 		return 0xFFFFFFFF;

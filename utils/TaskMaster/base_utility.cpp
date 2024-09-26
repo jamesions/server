@@ -76,7 +76,7 @@ bool MainFrame::LoadItems(){
 		while ((row = mysql_fetch_row(res)) != NULL){
 			eqitem newIT;
 			strcpy(newIT.name, row[0]);
-			newIT.id = atoi(row[1]);
+			newIT.id = Strings::ToInt(row[1]);
 			itemList.push_back(newIT);
 			itemsLoaded++;
 		}
@@ -127,7 +127,7 @@ bool MainFrame::LoadZones()
 			eqtask_zones newZ;
 			strcpy(newZ.name, row[0]);
 
-			newZ.id = atoi(row[1]);
+			newZ.id = Strings::ToInt(row[1]);
 			taskZoneList.push_back(newZ);
 
 			int * zoneId = new int;
@@ -168,7 +168,7 @@ bool MainFrame::LoadTasks()
 		res = mysql_use_result(mMysql);
 		while ((row = mysql_fetch_row(res)) != NULL){
 			eqtask newT;
-			newT.id = atoi(row[0]);
+			newT.id = Strings::ToInt(row[0]);
 
 			//This isn't all that safe
 			//Working under the assumption that:
@@ -185,15 +185,15 @@ bool MainFrame::LoadTasks()
 			if(newT.id > highestIndex)
 				highestIndex = newT.id;
 
-			newT.rewardid = atoi(row[4]);
-			newT.cashreward = atoi(row[5]);
-			newT.xpreward = atoi(row[6]);
-			newT.rewardmethod = atoi(row[7]);
-			newT.startzone = atoi(row[8]);
-			newT.duration = atoi(row[9]);
-			newT.level_min = atoi(row[10]);
-			newT.level_max = atoi(row[11]);
-			newT.repeatable = atoi(row[12]) ? true : false;
+			newT.rewardid = Strings::ToInt(row[4]);
+			newT.cashreward = Strings::ToInt(row[5]);
+			newT.xpreward = Strings::ToInt(row[6]);
+			newT.rewardmethod = Strings::ToInt(row[7]);
+			newT.startzone = Strings::ToInt(row[8]);
+			newT.duration = Strings::ToInt(row[9]);
+			newT.level_min = Strings::ToInt(row[10]);
+			newT.level_max = Strings::ToInt(row[11]);
+			newT.repeatable = Strings::ToInt(row[12]) ? true : false;
 
 			taskList.push_back(newT);
 
@@ -225,8 +225,8 @@ bool MainFrame::LoadGoals()
 		res = mysql_use_result(mMysql);
 		while ((row = mysql_fetch_row(res)) != NULL){
 			eqtask_goallist newGL;
-			newGL.id = atoi(row[0]);
-			newGL.value = atoi(row[1]);
+			newGL.id = Strings::ToInt(row[0]);
+			newGL.value = Strings::ToInt(row[1]);
 			goalTaskList.push_back(newGL);
 
 			goalsLoaded++;
@@ -241,44 +241,43 @@ bool MainFrame::LoadGoals()
 	return true;
 }
 
-bool MainFrame::LoadActivities()
-{
-	if(mMysql){
+bool MainFrame::LoadActivities() {
+	if (mMysql) {
 		mErrorLog->Log(eqEmuLogBoth, "Loading Activities...");
 		unsigned int activitiesLoaded = 0;
-		MYSQL_RES *res;
-		MYSQL_ROW row;
+		MYSQL_RES    *res;
+		MYSQL_ROW    row;
 
-		if (mysql_query(mMysql, "SELECT taskid, activityid, step, activitytype, text1, text2, text3, goalid, goalmethod, goalcount, delivertonpc, zoneid, optional FROM activities")) {
+		if (mysql_query(mMysql,
+		                "SELECT taskid, activityid, step, activitytype, text1, text2, text3, goalid, goalmethod, goalcount, delivertonpc, zoneid, optional FROM `task_activities`")) {
 			mErrorLog->Log(eqEmuLogBoth, "MySQL Connection Error: %s", mysql_error(mMysql));
 			return false;
 		}
 
-		res = mysql_use_result(mMysql);
-		while ((row = mysql_fetch_row(res)) != NULL){
+		res         = mysql_use_result(mMysql);
+		while ((row = mysql_fetch_row(res)) != NULL) {
 			eqtask_activities newAL;
 
-			newAL.id = atoi(row[0]);
-			newAL.activityId = atoi(row[1]);
-			newAL.step = atoi(row[2]);
-			newAL.activityType = atoi(row[3]);
+			newAL.id           = Strings::ToInt(row[0]);
+			newAL.activityId   = Strings::ToInt(row[1]);
+			newAL.step         = Strings::ToInt(row[2]);
+			newAL.activityType = Strings::ToInt(row[3]);
 			strcpy(newAL.text1, row[4]);
 			strcpy(newAL.text2, row[5]);
 			strcpy(newAL.text3, row[6]);
-			newAL.goalid = atoi(row[7]);
-			newAL.goalmethod = atoi(row[8]);
-			newAL.goalcount = atoi(row[9]);
-			newAL.deliverToNpc = atoi(row[10]);
-			newAL.zoneid = atoi(row[11]);
-			newAL.optional = atoi(row[12]) ? true : false;
+			newAL.goalid       = Strings::ToInt(row[7]);
+			newAL.goalmethod   = Strings::ToInt(row[8]);
+			newAL.goalcount    = Strings::ToInt(row[9]);
+			newAL.deliverToNpc = Strings::ToInt(row[10]);
+			newAL.zoneid       = Strings::ToInt(row[11]);
+			newAL.optional     = Strings::ToInt(row[12]) ? true : false;
 
 			taskActivitiesList.push_back(newAL);
 			activitiesLoaded++;
 		}
 		mErrorLog->Log(eqEmuLogBoth, "%u Successfully Loaded Activities", activitiesLoaded);
 		mysql_free_result(res);
-	}
-	else{
+	} else {
 		mErrorLog->Log(eqEmuLogBoth, "Mysql connection did not exist for activity load.");
 		return false;
 	}
@@ -302,8 +301,8 @@ bool MainFrame::LoadProximity()
 		while ((row = mysql_fetch_row(res)) != NULL){
 			eqtask_proximity newPR;
 
-			newPR.zoneid = atoi(row[0]);
-			newPR.exploreid = atoi(row[1]);
+			newPR.zoneid = Strings::ToInt(row[0]);
+			newPR.exploreid = Strings::ToInt(row[1]);
 			newPR.minx = atof(row[2]);
 			newPR.maxx = atof(row[3]);
 			newPR.miny = atof(row[4]);

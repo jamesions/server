@@ -33,7 +33,10 @@
 #include <sys/stat.h>
 #endif
 
-namespace EQEmu {
+#include <filesystem>
+namespace fs = std::filesystem;
+
+namespace EQ {
 
 	struct MemoryMappedFile::Implementation {
 #ifdef _WINDOWS

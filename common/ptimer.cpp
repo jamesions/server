@@ -21,7 +21,7 @@
 #include "timer.h"
 #include "ptimer.h"
 #include "database.h"
-#include "string_util.h"
+#include "strings.h"
 
 #ifdef _WINDOWS
 	#include <winsock2.h>
@@ -134,7 +134,6 @@ bool PersistentTimer::Load(Database *db) {
                                     (unsigned long)_char_id, _type);
     auto results = db->QueryDatabase(query);
 	if (!results.Success()) {
-		Log.Out(Logs::General, Logs::Error, "Error in PersistentTimer::Load, error: %s", results.ErrorMessage().c_str());
 		return false;
 	}
 
@@ -165,9 +164,6 @@ bool PersistentTimer::Store(Database *db) {
 #endif
     auto results = db->QueryDatabase(query);
 	if (!results.Success()) {
-#if EQDEBUG > 5
-		Log.Out(Logs::General, Logs::Error, "Error in PersistentTimer::Store, error: %s", results.ErrorMessage().c_str());
-#endif
 		return false;
 	}
 
@@ -185,9 +181,6 @@ bool PersistentTimer::Clear(Database *db) {
 
     auto results = db->QueryDatabase(query);
 	if (!results.Success()) {
-#if EQDEBUG > 5
-		Log.Out(Logs::General, Logs::Error, "Error in PersistentTimer::Clear, error: %s", results.ErrorMessage().c_str());
-#endif
 		return false;
 	}
 
@@ -197,10 +190,6 @@ bool PersistentTimer::Clear(Database *db) {
 
 /* This function checks if the timer triggered */
 bool PersistentTimer::Expired(Database *db, bool iReset) {
-	if (this == nullptr) {
-		Log.Out(Logs::General, Logs::Error, "Null timer during ->Check()!?\n");
-		return(true);
-	}
 	uint32 current_time = get_current_time();
 	if (current_time-start_time >= timer_time) {
 		if (enabled && iReset) {
@@ -289,9 +278,6 @@ bool PTimerList::Load(Database *db) {
                                     (unsigned long)_char_id);
     auto results = db->QueryDatabase(query);
 	if (!results.Success()) {
-#if EQDEBUG > 5
-		Log.Out(Logs::General, Logs::Error, "Error in PersistentTimer::Load, error: %s", results.ErrorMessage().c_str());
-#endif
 		return false;
 	}
 
@@ -302,9 +288,9 @@ bool PTimerList::Load(Database *db) {
 	PersistentTimer *cur;
 
     for (auto row = results.begin(); row != results.end(); ++row) {
-		type = atoi(row[0]);
-		start_time = strtoul(row[1], nullptr, 10);
-		timer_time = strtoul(row[2], nullptr, 10);
+		type = Strings::ToUnsignedInt(row[0]);
+		start_time = Strings::ToUnsignedInt(row[1]);
+		timer_time = Strings::ToUnsignedInt(row[2]);
 		enabled = (row[3][0] == '1');
 
 		//if it expired allready, dont bother.
@@ -348,9 +334,6 @@ bool PTimerList::Clear(Database *db) {
 #endif
     auto results = db->QueryDatabase(query);
 	if (!results.Success()) {
-#if EQDEBUG > 5
-		Log.Out(Logs::General, Logs::Error, "Error in PersistentTimer::Clear, error: %s", results.ErrorMessage().c_str());
-#endif
 		return false;
 	}
 
@@ -440,9 +423,6 @@ bool PTimerList::ClearOffline(Database *db, uint32 char_id, pTimerType type) {
 #endif
     auto results = db->QueryDatabase(query);
 	if (!results.Success()) {
-#if EQDEBUG > 5
-		Log.Out(Logs::General, Logs::Error, "Error in PTimerList::ClearOffline, error: %s", results.ErrorMessage().c_str());
-#endif
 		return false;
 	}
 

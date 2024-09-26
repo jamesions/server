@@ -16,6 +16,7 @@
 	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 */
 
+#include "eqemu_logsys.h"
 #include "emu_opcodes.h"
 #include "opcodemgr.h"
 
@@ -31,7 +32,7 @@ OpcodeManager::OpcodeManager() {
 bool OpcodeManager::LoadOpcodesFile(const char *filename, OpcodeSetStrategy *s, bool report_errors) {
 	FILE *opf = fopen(filename, "r");
 	if(opf == nullptr) {
-		fprintf(stderr, "Unable to open opcodes file '%s'. Thats bad.\n", filename);
+		LogError("Unable to open opcodes file [{}]", filename);
 		return(false);
 	}
 
@@ -183,6 +184,9 @@ uint16 RegularOpcodeManager::EmuToEQ(const EmuOpcode emu_op) {
 	MOpcodes.lock();
 	res = emu_to_eq[emu_op];
 	MOpcodes.unlock();
+
+	LogNetcodeDetail("[Opcode Manager] Translate emu [{}] ({:#06x}) eq [{:#06x}]", OpcodeNames[emu_op], emu_op, res);
+
 #ifdef DEBUG_TRANSLATE
 	fprintf(stderr, "M Translate Emu %s (%d) to EQ 0x%.4x\n", OpcodeNames[emu_op], emu_op, res);
 #endif

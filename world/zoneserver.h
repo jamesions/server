@@ -19,42 +19,46 @@
 #define ZONESERVER_H
 
 #include "world_tcp_connection.h"
-#include "../common/emu_tcp_connection.h"
+#include "../common/net/servertalk_server.h"
+#include "../common/event/timer.h"
+#include "../common/timer.h"
+#include "../common/emu_constants.h"
+#include "console.h"
 #include <string.h>
 #include <string>
 
 class Client;
 class ServerPacket;
 
-
 class ZoneServer : public WorldTCPConnection {
 public:
-	ZoneServer(EmuTCPConnection* itcpc);
+	ZoneServer(std::shared_ptr<EQ::Net::ServertalkServerConnection> in_connection, EQ::Net::ConsoleServer *in_console);
 	~ZoneServer();
 	virtual inline bool IsZoneServer() { return true; }
 
-	bool		Process();
-	bool		SendPacket(ServerPacket* pack) { return tcpc->SendPacket(pack); }
+	void        SendPacket(ServerPacket* pack) { tcpc->SendPacket(pack); }
 	void		SendEmoteMessage(const char* to, uint32 to_guilddbid, int16 to_minstatus, uint32 type, const char* message, ...);
 	void		SendEmoteMessageRaw(const char* to, uint32 to_guilddbid, int16 to_minstatus, uint32 type, const char* message);
-	bool		SetZone(uint32 iZoneID, uint32 iInstanceID = 0, bool iStaticZone = false);
-	void		TriggerBootup(uint32 iZoneID = 0, uint32 iInstanceID = 0, const char* iAdminName = 0, bool iMakeStatic = false);
-	void		Disconnect() { tcpc->Disconnect(); }
+	void		SendKeepAlive();
+	bool		SetZone(uint32 in_zone_id, uint32 in_instance_id = 0, bool in_is_static_zone = false);
+	void		TriggerBootup(uint32 in_zone_id = 0, uint32 in_instance_id = 0, const char* admin_name = 0, bool is_static_zone = false);
+	void		Disconnect() { auto handle = tcpc->Handle(); if (handle) { handle->Disconnect(); } }
 	void		IncomingClient(Client* client);
-	void		LSBootUpdate(uint32 zoneid, uint32 iInstanceID = 0, bool startup = false);
-	void		LSSleepUpdate(uint32 zoneid);
-	void		LSShutDownUpdate(uint32 zoneid);
+	void		LSBootUpdate(uint32 zone_id, uint32 instance_id = 0, bool startup = false);
+	void		LSSleepUpdate(uint32 zone_id);
 	uint32		GetPrevZoneID() { return zone_server_previous_zone_id; }
 	void		ChangeWID(uint32 iCharID, uint32 iWID);
 	void		SendGroupIDs();
+	void        HandleMessage(uint16 opcode, const EQ::Net::Packet &p);
 
 	inline const char*	GetZoneName() const	{ return zone_name; }
 	inline const char*	GetZoneLongName() const	{ return long_name; }
 	const char*			GetCompileTime() const{ return compiled; }
 	void				SetCompile(char* in_compile){ strcpy(compiled,in_compile); }
 	inline uint32		GetZoneID() const	{ return zone_server_zone_id; }
-	inline uint32		GetIP() const		{ return tcpc->GetrIP(); }
-	inline uint16		GetPort() const		{ return tcpc->GetrPort(); }
+	inline bool         IsConnected() const { return tcpc->Handle() ? tcpc->Handle()->IsConnected() : false; }
+	inline std::string	GetIP() const		{ return tcpc->Handle() ? tcpc->Handle()->RemoteIP() : ""; }
+	inline uint16		GetPort() const		{ return tcpc->Handle() ? tcpc->Handle()->RemotePort() : 0; }
 	inline const char*	GetCAddress() const	{ return client_address; }
 	inline const char*	GetCLocalAddress() const { return client_local_address; }
 	inline uint16		GetCPort() const	{ return client_port; }
@@ -66,14 +70,15 @@ public:
 	inline void			RemovePlayer()		{ zone_player_count--; }
 	inline const char * GetLaunchName() const { return(launcher_name.c_str()); }
 	inline const char * GetLaunchedName() const { return(launched_name.c_str()); }
+	std::string         GetUUID() const { return tcpc->GetUUID(); }
 
 	inline uint32		GetInstanceID() { return instance_id; }
-	inline void			SetInstanceID(uint32 i) { instance_id = i; }
 
 	inline uint32		GetZoneOSProcessID() { return zone_os_process_id; }
 
 private:
-	EmuTCPConnection* const tcpc;
+	std::shared_ptr<EQ::Net::ServertalkServerConnection> tcpc;
+	std::unique_ptr<EQ::Timer> boot_timer_obj;
 
 	uint32	zone_server_id;
 	char	client_address[250];
@@ -81,7 +86,6 @@ private:
 	uint16	client_port;
 	bool	is_booting_up;
 	bool	is_static_zone;
-	bool	is_authenticated;
 	uint32	zone_player_count;
 	char	compiled[25];
 	char	zone_name[32];
@@ -93,6 +97,7 @@ private:
 	uint32  zone_os_process_id;
 	std::string launcher_name;	//the launcher which started us
 	std::string launched_name;	//the name of the zone we launched.
+	EQ::Net::ConsoleServer *console;
 };
 
 #endif

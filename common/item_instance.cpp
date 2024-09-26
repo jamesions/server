@@ -17,13 +17,14 @@
 */
 
 #include "inventory_profile.h"
+#include "../common/data_verification.h"
 //#include "classes.h"
 //#include "global_define.h"
 //#include "item_instance.h"
 //#include "races.h"
 #include "rulesys.h"
 #include "shareddb.h"
-#include "string_util.h"
+#include "strings.h"
 
 //#include "../common/light_source.h"
 
@@ -31,10 +32,11 @@
 
 //#include <iostream>
 
-int32 NextItemInstSerialNumber = 1;
+int32 next_item_serial_number = 1;
+std::unordered_set<uint64> guids{};
 
-static inline int32 GetNextItemInstSerialNumber() {
-
+static inline int32 GetNextItemInstSerialNumber()
+{
 	// The Bazaar relies on each item a client has up for Trade having a unique
 	// identifier. This 'SerialNumber' is sent in Serialized item packets and
 	// is used in Bazaar packets to identify the item a player is buying or inspecting.
@@ -45,117 +47,80 @@ static inline int32 GetNextItemInstSerialNumber() {
 	// NextItemInstSerialNumber is the next one to hand out.
 	//
 	// It is very unlikely to reach 2,147,483,647. Maybe we should call abort(), rather than wrapping back to 1.
-	if(NextItemInstSerialNumber >= INT_MAX)
-		NextItemInstSerialNumber = 1;
-	else
-		NextItemInstSerialNumber++;
+	if (next_item_serial_number >= INT32_MAX) {
+		next_item_serial_number = 1;
+	}
+	else {
+		next_item_serial_number++;
+	}
 
-	return NextItemInstSerialNumber;
+	while (guids.contains(next_item_serial_number)) {
+		next_item_serial_number++;
+	}
+
+	return next_item_serial_number;
 }
 
 //
-// class EQEmu::ItemInstance
+// class EQ::ItemInstance
 //
-EQEmu::ItemInstance::ItemInstance(const ItemData* item, int16 charges) {
-	m_use_type = ItemInstNormal;
-	if(item) {
+EQ::ItemInstance::ItemInstance(const ItemData* item, int16 charges) {
+
+	if (item) {
 		m_item = new ItemData(*item);
+	}
+
+	m_charges = charges;
+
+	if (m_item && m_item->IsClassCommon()) {
+		m_color = m_item->Color;
+	}
+
+	m_SerialNumber  = GetNextItemInstSerialNumber();
+}
+
+EQ::ItemInstance::ItemInstance(SharedDatabase *db, uint32 item_id, int16 charges) {
+
+	m_item     = db->GetItem(item_id);
+
+	if (m_item) {
+		m_item = new ItemData(*m_item);
+	}
+
+	m_charges = charges;
+
+	if (m_item && m_item->IsClassCommon()) {
+		m_color = m_item->Color;
+	} else {
+		m_color = 0;
+	}
+
+	m_SerialNumber  = GetNextItemInstSerialNumber();
+}
+
+EQ::ItemInstance::ItemInstance(ItemInstTypes use_type) {
+	m_use_type     = use_type;
+}
+
+// Make a copy of an EQ::ItemInstance object
+EQ::ItemInstance::ItemInstance(const ItemInstance& copy)
+{
+	m_use_type = copy.m_use_type;
+
+	if (copy.m_item) {
+		m_item = new ItemData(*copy.m_item);
 	} else {
 		m_item = nullptr;
 	}
-	m_charges = charges;
-	m_price = 0;
-	m_attuned = false;
-	m_merchantslot = 0;
-	if (m_item && m_item->IsClassCommon())
-		m_color = m_item->Color;
-	else
-		m_color = 0;
-	m_merchantcount = 1;
-	m_SerialNumber = GetNextItemInstSerialNumber();
 
-	m_exp = 0;
-	m_evolveLvl = 0;
-	m_activated = false;
-	m_scaledItem = nullptr;
-	m_evolveInfo = nullptr;
-	m_scaling = false;
-	m_ornamenticon = 0;
-	m_ornamentidfile = 0;
-	m_ornament_hero_model = 0;
-	m_recast_timestamp = 0;
-}
+	m_charges       = copy.m_charges;
+	m_price         = copy.m_price;
+	m_color         = copy.m_color;
+	m_merchantslot  = copy.m_merchantslot;
+	m_currentslot   = copy.m_currentslot;
+	m_attuned       = copy.m_attuned;
+	m_merchantcount = copy.m_merchantcount;
 
-EQEmu::ItemInstance::ItemInstance(SharedDatabase *db, uint32 item_id, int16 charges) {
-	m_use_type = ItemInstNormal;
-	m_item = db->GetItem(item_id);
-	if(m_item) {
-		m_item = new ItemData(*m_item);
-	}
-	else {
-		m_item = nullptr;
-	}
-
-	m_charges = charges;
-	m_price = 0;
-	m_merchantslot = 0;
-	m_attuned=false;
-	if (m_item && m_item->IsClassCommon())
-		m_color = m_item->Color;
-	else
-		m_color = 0;
-	m_merchantcount = 1;
-	m_SerialNumber = GetNextItemInstSerialNumber();
-
-	m_exp = 0;
-	m_evolveLvl = 0;
-	m_activated = false;
-	m_scaledItem = nullptr;
-	m_evolveInfo = nullptr;
-	m_scaling = false;
-	m_ornamenticon = 0;
-	m_ornamentidfile = 0;
-	m_ornament_hero_model = 0;
-	m_recast_timestamp = 0;
-}
-
-EQEmu::ItemInstance::ItemInstance(ItemInstTypes use_type) {
-	m_use_type = use_type;
-	m_item = nullptr;
-	m_charges = 0;
-	m_price = 0;
-	m_attuned = false;
-	m_merchantslot = 0;
-	m_color = 0;
-
-	m_exp = 0;
-	m_evolveLvl = 0;
-	m_activated = false;
-	m_scaledItem = nullptr;
-	m_evolveInfo = nullptr;
-	m_scaling = false;
-	m_ornamenticon = 0;
-	m_ornamentidfile = 0;
-	m_ornament_hero_model = 0;
-	m_recast_timestamp = 0;
-}
-
-// Make a copy of an EQEmu::ItemInstance object
-EQEmu::ItemInstance::ItemInstance(const ItemInstance& copy)
-{
-	m_use_type=copy.m_use_type;
-	if(copy.m_item)
-		m_item = new ItemData(*copy.m_item);
-	else
-		m_item = nullptr;
-
-	m_charges=copy.m_charges;
-	m_price=copy.m_price;
-	m_color=copy.m_color;
-	m_merchantslot=copy.m_merchantslot;
-	m_currentslot=copy.m_currentslot;
-	m_attuned=copy.m_attuned;
-	m_merchantcount=copy.m_merchantcount;
 	// Copy container contents
 	for (auto it = copy.m_contents.begin(); it != copy.m_contents.end(); ++it) {
 		ItemInstance* inst_old = it->second;
@@ -165,40 +130,46 @@ EQEmu::ItemInstance::ItemInstance(const ItemInstance& copy)
 			inst_new = inst_old->Clone();
 		}
 
-		if (inst_new != nullptr) {
+		if (inst_new) {
 			m_contents[it->first] = inst_new;
 		}
 	}
+
 	std::map<std::string, std::string>::const_iterator iter;
 	for (iter = copy.m_custom_data.begin(); iter != copy.m_custom_data.end(); ++iter) {
 		m_custom_data[iter->first] = iter->second;
 	}
-	m_SerialNumber = copy.m_SerialNumber;
-	m_custom_data = copy.m_custom_data;
-	m_timers = copy.m_timers;
 
-	m_exp = copy.m_exp;
+	m_SerialNumber = copy.m_SerialNumber;
+	m_custom_data  = copy.m_custom_data;
+	m_timers       = copy.m_timers;
+
+	m_exp       = copy.m_exp;
 	m_evolveLvl = copy.m_evolveLvl;
 	m_activated = copy.m_activated;
-	if (copy.m_scaledItem)
+
+	if (copy.m_scaledItem) {
 		m_scaledItem = new ItemData(*copy.m_scaledItem);
-	else
+	} else {
 		m_scaledItem = nullptr;
+	}
 
-	if(copy.m_evolveInfo)
+	if (copy.m_evolveInfo) {
 		m_evolveInfo = new EvolveInfo(*copy.m_evolveInfo);
-	else
+	} else {
 		m_evolveInfo = nullptr;
+	}
 
-	m_scaling = copy.m_scaling;
-	m_ornamenticon = copy.m_ornamenticon;
-	m_ornamentidfile = copy.m_ornamentidfile;
+	m_scaling             = copy.m_scaling;
+	m_ornamenticon        = copy.m_ornamenticon;
+	m_ornamentidfile      = copy.m_ornamentidfile;
 	m_ornament_hero_model = copy.m_ornament_hero_model;
-	m_recast_timestamp = copy.m_recast_timestamp;
+	m_recast_timestamp    = copy.m_recast_timestamp;
+	m_new_id_file         = copy.m_new_id_file;
 }
 
 // Clean up container contents
-EQEmu::ItemInstance::~ItemInstance()
+EQ::ItemInstance::~ItemInstance()
 {
 	Clear();
 	safe_delete(m_item);
@@ -207,141 +178,170 @@ EQEmu::ItemInstance::~ItemInstance()
 }
 
 // Query item type
-bool EQEmu::ItemInstance::IsType(item::ItemClass item_class) const
+bool EQ::ItemInstance::IsType(item::ItemClass item_class) const
 {
 	// IsType(<ItemClassTypes>) does not protect against 'm_item = nullptr'
-	
-	// Check usage type
-	if ((m_use_type == ItemInstWorldContainer) && (item_class == item::ItemClassBag))
-		return true;
 
-	if (!m_item)
+	// Check usage type
+	if (m_use_type == ItemInstWorldContainer && item_class == item::ItemClassBag) {
+		return true;
+	}
+
+	if (!m_item) {
 		return false;
+	}
 
 	return (m_item->ItemClass == item_class);
 }
 
-bool EQEmu::ItemInstance::IsClassCommon() const
+bool EQ::ItemInstance::IsClassCommon() const
 {
 	return (m_item && m_item->IsClassCommon());
 }
 
-bool EQEmu::ItemInstance::IsClassBag() const
+bool EQ::ItemInstance::IsClassBag() const
 {
 	return (m_item && m_item->IsClassBag());
 }
 
-bool EQEmu::ItemInstance::IsClassBook() const
+bool EQ::ItemInstance::IsClassBook() const
 {
 	return (m_item && m_item->IsClassBook());
 }
 
 // Is item stackable?
-bool EQEmu::ItemInstance::IsStackable() const
+bool EQ::ItemInstance::IsStackable() const
 {
-	if (!m_item)
-		return false;
-	
-	return m_item->Stackable;
+	return (m_item && m_item->Stackable);
 }
 
-bool EQEmu::ItemInstance::IsCharged() const
+bool EQ::ItemInstance::IsCharged() const
 {
-	if (!m_item)
+	if (!m_item) {
 		return false;
-	
-	if (m_item->MaxCharges > 1)
+	}
+
+	if (m_item->MaxCharges > 1) {
 		return true;
-	else
+	} else {
 		return false;
+	}
 }
 
 // Can item be equipped?
-bool EQEmu::ItemInstance::IsEquipable(uint16 race, uint16 class_) const
+bool EQ::ItemInstance::IsEquipable(uint16 race, uint16 class_) const
 {
-	if (!m_item || (m_item->Slots == 0))
+	if (!m_item || !m_item->Slots) {
 		return false;
+	}
 
 	return m_item->IsEquipable(race, class_);
 }
 
+// Can item be equipped by Class?
+bool EQ::ItemInstance::IsClassEquipable(uint16 class_) const
+{
+	if (!m_item || !m_item->Slots) {
+		return false;
+	}
+
+	return m_item->IsClassEquipable(class_);
+}
+
+// Can item be equipped by Race?
+bool EQ::ItemInstance::IsRaceEquipable(uint16 race) const
+{
+	if (!m_item || !m_item->Slots) {
+		return false;
+	}
+
+	return m_item->IsRaceEquipable(race);
+}
+
 // Can equip at this slot?
-bool EQEmu::ItemInstance::IsEquipable(int16 slot_id) const
+bool EQ::ItemInstance::IsEquipable(int16 slot_id) const
 {
-	if (!m_item)
+	if (!m_item || !m_item->Slots) {
 		return false;
-
-	// another "shouldn't do" fix..will be fixed in future updates (requires code and database work)
-	int16 use_slot = INVALID_INDEX;
-	if (slot_id == inventory::slotPowerSource) { use_slot = inventory::slotGeneral1; }
-	if ((uint16)slot_id <= legacy::EQUIPMENT_END) { use_slot = slot_id; }
-
-	if (use_slot != INVALID_INDEX) {
-		if (m_item->Slots & (1 << use_slot))
-			return true;
 	}
 
-	return false;
-}
-
-bool EQEmu::ItemInstance::IsAugmentable() const
-{
-	if (!m_item)
+	if (slot_id < EQ::invslot::EQUIPMENT_BEGIN || slot_id > EQ::invslot::EQUIPMENT_END) {
 		return false;
-
-	for (int index = inventory::socketBegin; index < inventory::SocketCount; ++index) {
-		if (m_item->AugSlotType[index] != 0)
-			return true;
 	}
 
-	return false;
+	return ((m_item->Slots & (1 << slot_id)) != 0);
 }
 
-bool EQEmu::ItemInstance::AvailableWearSlot(uint32 aug_wear_slots) const {
-	// TODO: check to see if incoming 'aug_wear_slots' "switches" bit assignments like above...
-	// (if wrong, would only affect MainAmmo and MainPowerSource augments)
-	if (!m_item || !m_item->IsClassCommon())
+bool EQ::ItemInstance::IsAugmentable() const
+{
+	if (!m_item) {
 		return false;
+	}
 
-	int index = legacy::EQUIPMENT_BEGIN;
-	for (; index <= inventory::slotGeneral1; ++index) { // MainGeneral1 should be legacy::EQUIPMENT_END
-		if (m_item->Slots & (1 << index)) {
-			if (aug_wear_slots & (1 << index))
-				break;
+	for (int index = invaug::SOCKET_BEGIN; index <= invaug::SOCKET_END; ++index) {
+		if (m_item->AugSlotType[index] != 0) {
+			return true;
 		}
 	}
 
-	return (index < 23) ? true : false;
+	return false;
 }
 
-int8 EQEmu::ItemInstance::AvailableAugmentSlot(int32 augtype) const
-{
-	if (!m_item || !m_item->IsClassCommon())
-		return INVALID_INDEX;
-
-	int index = inventory::socketBegin;
-	for (; index < inventory::SocketCount; ++index) {
-		if (GetItem(index)) { continue; }
-		if (augtype == -1 || (m_item->AugSlotType[index] && ((1 << (m_item->AugSlotType[index] - 1)) & augtype)))
-			break;
-	}
-
-	return (index < inventory::SocketCount) ? index : INVALID_INDEX;
-}
-
-bool EQEmu::ItemInstance::IsAugmentSlotAvailable(int32 augtype, uint8 slot) const
-{
-	if (!m_item || !m_item->IsClassCommon())
-		 return false;
-
-	if ((!GetItem(slot) && m_item->AugSlotVisible[slot]) && augtype == -1 || (m_item->AugSlotType[slot] && ((1 << (m_item->AugSlotType[slot] - 1)) & augtype))) {
-		return true;
-	}
+bool EQ::ItemInstance::AvailableWearSlot(uint32 aug_wear_slots) const {
+	if (!m_item || !m_item->IsClassCommon()) {
 		return false;
+	}
+
+	int index = invslot::EQUIPMENT_BEGIN;
+	for (; index <= invslot::EQUIPMENT_END; ++index) {
+		if (m_item->Slots & (1 << index)) {
+			if (aug_wear_slots & (1 << index)) {
+				break;
+			}
+		}
+	}
+
+	return (index <= EQ::invslot::EQUIPMENT_END);
+}
+
+int8 EQ::ItemInstance::AvailableAugmentSlot(int32 augment_type) const
+{
+	if (!m_item || !m_item->IsClassCommon()) {
+		return INVALID_INDEX;
+	}
+
+	for (int16 slot_id = invaug::SOCKET_BEGIN; slot_id <= invaug::SOCKET_END; ++slot_id) {
+		if (IsAugmentSlotAvailable(augment_type, slot_id)) {
+			return slot_id;
+		}
+	}
+
+	return INVALID_INDEX;
+}
+
+bool EQ::ItemInstance::IsAugmentSlotAvailable(int32 augment_type, uint8 slot) const
+{
+	if (!m_item || !m_item->IsClassCommon() || GetItem(slot)) {
+		return false;
+	}
+
+	return (
+		(
+			augment_type == -1 ||
+			(
+				m_item->AugSlotType[slot] &&
+				((1 << (m_item->AugSlotType[slot] - 1)) & augment_type)
+			)
+		) &&
+		(
+			RuleB(Items, AugmentItemAllowInvisibleAugments) ||
+			m_item->AugSlotVisible[slot]
+		)
+	);
 }
 
 // Retrieve item inside container
-EQEmu::ItemInstance* EQEmu::ItemInstance::GetItem(uint8 index) const
+EQ::ItemInstance* EQ::ItemInstance::GetItem(uint8 index) const
 {
 	auto it = m_contents.find(index);
 	if (it != m_contents.end()) {
@@ -351,16 +351,17 @@ EQEmu::ItemInstance* EQEmu::ItemInstance::GetItem(uint8 index) const
 	return nullptr;
 }
 
-uint32 EQEmu::ItemInstance::GetItemID(uint8 slot) const
+uint32 EQ::ItemInstance::GetItemID(uint8 slot) const
 {
-	ItemInstance *item = GetItem(slot);
-	if (item)
+	const auto item = GetItem(slot);
+	if (item) {
 		return item->GetID();
+	}
 
 	return 0;
 }
 
-void EQEmu::ItemInstance::PutItem(uint8 index, const ItemInstance& inst)
+void EQ::ItemInstance::PutItem(uint8 index, const ItemInstance& inst)
 {
 	// Clean up item already in slot (if exists)
 	DeleteItem(index);
@@ -370,7 +371,7 @@ void EQEmu::ItemInstance::PutItem(uint8 index, const ItemInstance& inst)
 }
 
 // Remove item inside container
-void EQEmu::ItemInstance::DeleteItem(uint8 index)
+void EQ::ItemInstance::DeleteItem(uint8 index)
 {
 	ItemInstance* inst = PopItem(index);
 	safe_delete(inst);
@@ -378,7 +379,7 @@ void EQEmu::ItemInstance::DeleteItem(uint8 index)
 
 // Remove item from container without memory delete
 // Hands over memory ownership to client of this function call
-EQEmu::ItemInstance* EQEmu::ItemInstance::PopItem(uint8 index)
+EQ::ItemInstance* EQ::ItemInstance::PopItem(uint8 index)
 {
 	auto iter = m_contents.find(index);
 	if (iter != m_contents.end()) {
@@ -386,12 +387,12 @@ EQEmu::ItemInstance* EQEmu::ItemInstance::PopItem(uint8 index)
 		m_contents.erase(index);
 		return inst; // Return pointer that needs to be deleted (or otherwise managed)
 	}
-	
+
 	return nullptr;
 }
 
 // Remove all items from container
-void EQEmu::ItemInstance::Clear()
+void EQ::ItemInstance::Clear()
 {
 	// Destroy container contents
 	for (auto iter = m_contents.begin(); iter != m_contents.end(); ++iter) {
@@ -401,7 +402,7 @@ void EQEmu::ItemInstance::Clear()
 }
 
 // Remove all items from container
-void EQEmu::ItemInstance::ClearByFlags(byFlagSetting is_nodrop, byFlagSetting is_norent)
+void EQ::ItemInstance::ClearByFlags(byFlagSetting is_nodrop, byFlagSetting is_norent)
 {
 	// TODO: This needs work...
 
@@ -463,13 +464,13 @@ void EQEmu::ItemInstance::ClearByFlags(byFlagSetting is_nodrop, byFlagSetting is
 	}
 }
 
-uint8 EQEmu::ItemInstance::FirstOpenSlot() const
+uint8 EQ::ItemInstance::FirstOpenSlot() const
 {
 	if (!m_item)
 		return INVALID_INDEX;
 
 	uint8 slots = m_item->BagSlots, i;
-	for (i = inventory::containerBegin; i < slots; i++) {
+	for (i = invbag::SLOT_BEGIN; i < slots; i++) {
 		if (!GetItem(i))
 			break;
 	}
@@ -477,26 +478,33 @@ uint8 EQEmu::ItemInstance::FirstOpenSlot() const
 	return (i < slots) ? i : INVALID_INDEX;
 }
 
-uint8 EQEmu::ItemInstance::GetTotalItemCount() const
+uint8 EQ::ItemInstance::GetTotalItemCount() const
 {
-	if (!m_item)
+	if (!m_item) {
 		return 0;
-	
+	}
+
 	uint8 item_count = 1;
 
-	if (m_item && !m_item->IsClassBag()) { return item_count; }
+	if (!m_item->IsClassBag()) {
+		return item_count;
+	}
 
-	for (int index = inventory::containerBegin; index < m_item->BagSlots; ++index) { if (GetItem(index)) { ++item_count; } }
+	for (int index = invbag::SLOT_BEGIN; index < m_item->BagSlots; ++index) {
+		if (GetItem(index)) {
+			++item_count;
+		}
+	}
 
 	return item_count;
 }
 
-bool EQEmu::ItemInstance::IsNoneEmptyContainer()
+bool EQ::ItemInstance::IsNoneEmptyContainer()
 {
 	if (!m_item || !m_item->IsClassBag())
 		return false;
 
-	for (int index = inventory::containerBegin; index < m_item->BagSlots; ++index) {
+	for (int index = invbag::SLOT_BEGIN; index < m_item->BagSlots; ++index) {
 		if (GetItem(index))
 			return true;
 	}
@@ -505,89 +513,111 @@ bool EQEmu::ItemInstance::IsNoneEmptyContainer()
 }
 
 // Retrieve augment inside item
-EQEmu::ItemInstance* EQEmu::ItemInstance::GetAugment(uint8 slot) const
+EQ::ItemInstance* EQ::ItemInstance::GetAugment(uint8 augment_index) const
 {
-	if (m_item && m_item->IsClassCommon())
-		return GetItem(slot);
+	if (m_item && m_item->IsClassCommon()) {
+		return GetItem(augment_index);
+	}
 
 	return nullptr;
 }
 
-EQEmu::ItemInstance* EQEmu::ItemInstance::GetOrnamentationAug(int32 ornamentationAugtype) const
+bool EQ::ItemInstance::IsOrnamentationAugment(EQ::ItemInstance* augment) const
 {
-	if (!m_item || !m_item->IsClassCommon()) { return nullptr; }
-	if (ornamentationAugtype == 0) { return nullptr; }
+	if (!m_item || !m_item->IsClassCommon() || !augment) {
+		return false;
+	}
 
-	for (int i = inventory::socketBegin; i < inventory::SocketCount; i++)
-	{
-		if (GetAugment(i) && m_item->AugSlotType[i] == ornamentationAugtype)
-		{
-			const char *item_IDFile = GetAugment(i)->GetItem()->IDFile;
-			if (
-				(strncmp(item_IDFile, "IT64", strlen(item_IDFile)) == 0
-				|| strncmp(item_IDFile, "IT63", strlen(item_IDFile)) == 0)
-				&& GetAugment(i)->GetItem()->HerosForgeModel == 0
-				)
-			{
-				continue;
-			}
-			return this->GetAugment(i);
+	const auto augment_item = augment->GetItem();
+	if (!augment_item) {
+		return false;
+	}
+
+	const std::string& idfile = augment_item->IDFile;
+
+	if (
+		EQ::ValueWithin(
+			augment->GetAugmentType(),
+			OrnamentationAugmentTypes::StandardOrnamentation,
+			OrnamentationAugmentTypes::SpecialOrnamentation
+		) ||
+		(
+			idfile != "IT63" &&
+			idfile != "IT64"
+		) ||
+		augment_item->HerosForgeModel
+	) {
+		return true;
+	}
+
+	return false;
+}
+
+EQ::ItemInstance* EQ::ItemInstance::GetOrnamentationAugment() const
+{
+	if (!m_item || !m_item->IsClassCommon()) {
+		return nullptr;
+	}
+
+	for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; i++) {
+		const auto augment = GetAugment(i);
+		if (augment && IsOrnamentationAugment(augment)) {
+			return augment;
 		}
 	}
 
 	return nullptr;
 }
 
-uint32 EQEmu::ItemInstance::GetOrnamentHeroModel(int32 material_slot) const {
+uint32 EQ::ItemInstance::GetOrnamentHeroModel(int32 material_slot) const
+{
 	// Not a Hero Forge item.
-	if (m_ornament_hero_model == 0 || material_slot < 0)
+	if (m_ornament_hero_model == 0 || material_slot < 0) {
 		return 0;
+	}
 
 	// Item is using an explicit Hero Forge ID
-	if (m_ornament_hero_model >= 1000)
+	if (m_ornament_hero_model >= 1000) {
 		return m_ornament_hero_model;
+	}
 
 	// Item is using a shorthand ID
 	return (m_ornament_hero_model * 100) + material_slot;
 }
 
-bool EQEmu::ItemInstance::UpdateOrnamentationInfo() {
-	if (!m_item || !m_item->IsClassCommon())
+bool EQ::ItemInstance::UpdateOrnamentationInfo()
+{
+	if (!m_item || !m_item->IsClassCommon()) {
 		return false;
-	
-	bool ornamentSet = false;
+	}
 
-	int32 ornamentationAugtype = RuleI(Character, OrnamentationAugmentType);
-	if (GetOrnamentationAug(ornamentationAugtype))
-	{
-		const ItemData* ornamentItem;
-		ornamentItem = GetOrnamentationAug(ornamentationAugtype)->GetItem();
-		if (ornamentItem != nullptr)
-		{
-			SetOrnamentIcon(ornamentItem->Icon);
-			SetOrnamentHeroModel(ornamentItem->HerosForgeModel);
-			if (strlen(ornamentItem->IDFile) > 2)
-			{
-				SetOrnamentationIDFile(atoi(&ornamentItem->IDFile[2]));
-			}
-			else
-			{
+	const auto augment = GetOrnamentationAugment();
+
+	if (augment) {
+		const auto augment_item = GetOrnamentationAugment()->GetItem();
+
+		if (augment_item) {
+			SetOrnamentIcon(augment_item->Icon);
+			SetOrnamentHeroModel(augment_item->HerosForgeModel);
+
+			if (strlen(augment_item->IDFile) > 2) {
+				SetOrnamentationIDFile(Strings::ToUnsignedInt(&augment_item->IDFile[2]));
+			} else {
 				SetOrnamentationIDFile(0);
 			}
-			ornamentSet = true;
+
+			return true;
 		}
 	}
-	else
-	{
-		SetOrnamentIcon(0);
-		SetOrnamentHeroModel(0);
-		SetOrnamentationIDFile(0);
-	}
 
-	return ornamentSet;
+	SetOrnamentIcon(0);
+	SetOrnamentHeroModel(0);
+	SetOrnamentationIDFile(0);
+
+	return false;
 }
 
-bool EQEmu::ItemInstance::CanTransform(const ItemData *ItemToTry, const ItemData *Container, bool AllowAll) {
+bool EQ::ItemInstance::CanTransform(const ItemData *ItemToTry, const ItemData *Container, bool AllowAll) {
 	if (!ItemToTry || !Container) return false;
 
 	if (ItemToTry->ItemType == item::ItemTypeArrow || strnlen(Container->CharmFile, 30) == 0)
@@ -634,24 +664,25 @@ bool EQEmu::ItemInstance::CanTransform(const ItemData *ItemToTry, const ItemData
 	return false;
 }
 
-uint32 EQEmu::ItemInstance::GetAugmentItemID(uint8 slot) const
+uint32 EQ::ItemInstance::GetAugmentItemID(uint8 augment_index) const
 {
-	if (!m_item || !m_item->IsClassCommon())
+	if (!m_item || !m_item->IsClassCommon()) {
 		return 0;
+	}
 
-	return GetItemID(slot);
+	return GetItemID(augment_index);
 }
 
 // Add an augment to the item
-void EQEmu::ItemInstance::PutAugment(uint8 slot, const ItemInstance& augment)
+void EQ::ItemInstance::PutAugment(uint8 slot, const ItemInstance& augment)
 {
 	if (!m_item || !m_item->IsClassCommon())
 		return;
-	
+
 	PutItem(slot, augment);
 }
 
-void EQEmu::ItemInstance::PutAugment(SharedDatabase *db, uint8 slot, uint32 item_id)
+void EQ::ItemInstance::PutAugment(SharedDatabase *db, uint8 slot, uint32 item_id)
 {
 	if (item_id == 0) { return; }
 	if (db == nullptr) { return; /* TODO: add log message for nullptr */ }
@@ -660,42 +691,83 @@ void EQEmu::ItemInstance::PutAugment(SharedDatabase *db, uint8 slot, uint32 item
 	if (aug) {
 		PutAugment(slot, *aug);
 		safe_delete(aug);
-	}	
+	}
 }
 
 // Remove augment from item and destroy it
-void EQEmu::ItemInstance::DeleteAugment(uint8 index)
+void EQ::ItemInstance::DeleteAugment(uint8 index)
 {
 	if (!m_item || !m_item->IsClassCommon())
 		return;
-	
+
 	DeleteItem(index);
 }
 
 // Remove augment from item and return it
-EQEmu::ItemInstance* EQEmu::ItemInstance::RemoveAugment(uint8 index)
+EQ::ItemInstance* EQ::ItemInstance::RemoveAugment(uint8 index)
 {
 	if (!m_item || !m_item->IsClassCommon())
 		return nullptr;
-	
+
 	return PopItem(index);
 }
 
-bool EQEmu::ItemInstance::IsAugmented()
+bool EQ::ItemInstance::IsAugmented()
 {
-	if (!m_item || !m_item->IsClassCommon())
+	if (!m_item || !m_item->IsClassCommon()) {
 		return false;
-	
-	for (int index = inventory::socketBegin; index < inventory::SocketCount; ++index) {
-		if (GetAugmentItemID(index))
+	}
+
+	for (uint8 slot_id = invaug::SOCKET_BEGIN; slot_id <= invaug::SOCKET_END; ++slot_id) {
+		if (GetAugmentItemID(slot_id)) {
 			return true;
+		}
 	}
 
 	return false;
 }
 
+bool EQ::ItemInstance::ContainsAugmentByID(uint32 item_id)
+{
+	if (!m_item || !m_item->IsClassCommon()) {
+		return false;
+	}
+
+	if (!item_id) {
+		return false;
+	}
+
+	for (uint8 augment_slot = invaug::SOCKET_BEGIN; augment_slot <= invaug::SOCKET_END; ++augment_slot) {
+		if (GetAugmentItemID(augment_slot) == item_id) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+int EQ::ItemInstance::CountAugmentByID(uint32 item_id)
+{
+	int quantity = 0;
+	if (!m_item || !m_item->IsClassCommon()) {
+		return quantity;
+	}
+
+	if (!item_id) {
+		return quantity;
+	}
+
+	for (uint8 augment_slot = invaug::SOCKET_BEGIN; augment_slot <= invaug::SOCKET_END; ++augment_slot) {
+		if (GetAugmentItemID(augment_slot) == item_id) {
+			quantity++;
+		}
+	}
+
+	return quantity;
+}
+
 // Has attack/delay?
-bool EQEmu::ItemInstance::IsWeapon() const
+bool EQ::ItemInstance::IsWeapon() const
 {
 	if (!m_item || !m_item->IsClassCommon())
 		return false;
@@ -706,7 +778,7 @@ bool EQEmu::ItemInstance::IsWeapon() const
 		return ((m_item->Damage != 0) && (m_item->Delay != 0));
 }
 
-bool EQEmu::ItemInstance::IsAmmo() const
+bool EQ::ItemInstance::IsAmmo() const
 {
 	if (!m_item)
 		return false;
@@ -722,7 +794,7 @@ bool EQEmu::ItemInstance::IsAmmo() const
 
 }
 
-const EQEmu::ItemData* EQEmu::ItemInstance::GetItem() const
+const EQ::ItemData* EQ::ItemInstance::GetItem() const
 {
 	if (!m_item)
 		return nullptr;
@@ -733,13 +805,13 @@ const EQEmu::ItemData* EQEmu::ItemInstance::GetItem() const
 	return m_item;
 }
 
-const EQEmu::ItemData* EQEmu::ItemInstance::GetUnscaledItem() const
+const EQ::ItemData* EQ::ItemInstance::GetUnscaledItem() const
 {
 	// No operator calls and defaults to nullptr
 	return m_item;
 }
 
-std::string EQEmu::ItemInstance::GetCustomDataString() const {
+std::string EQ::ItemInstance::GetCustomDataString() const {
 	std::string ret_val;
 	auto iter = m_custom_data.begin();
 	while (iter != m_custom_data.end()) {
@@ -758,7 +830,20 @@ std::string EQEmu::ItemInstance::GetCustomDataString() const {
 	return ret_val;
 }
 
-std::string EQEmu::ItemInstance::GetCustomData(std::string identifier) {
+void EQ::ItemInstance::SetCustomDataString(const std::string& str)
+{
+	auto components = Strings::Split(str, "^");
+	auto value_count = components.size() / 2;
+
+	for (auto i = 0; i < value_count; i++) {
+		auto identifier = components[i * 2];
+		auto value = components[(i * 2) + 1];
+
+		SetCustomData(identifier, value);
+	}
+}
+
+std::string EQ::ItemInstance::GetCustomData(const std::string& identifier) {
 	std::map<std::string, std::string>::const_iterator iter = m_custom_data.find(identifier);
 	if (iter != m_custom_data.end()) {
 		return iter->second;
@@ -767,59 +852,57 @@ std::string EQEmu::ItemInstance::GetCustomData(std::string identifier) {
 	return "";
 }
 
-void EQEmu::ItemInstance::SetCustomData(std::string identifier, std::string value) {
+void EQ::ItemInstance::SetCustomData(const std::string& identifier, const std::string& value) {
 	DeleteCustomData(identifier);
 	m_custom_data[identifier] = value;
 }
 
-void EQEmu::ItemInstance::SetCustomData(std::string identifier, int value) {
+void EQ::ItemInstance::SetCustomData(const std::string& identifier, int value) {
 	DeleteCustomData(identifier);
 	std::stringstream ss;
 	ss << value;
 	m_custom_data[identifier] = ss.str();
 }
 
-void EQEmu::ItemInstance::SetCustomData(std::string identifier, float value) {
+void EQ::ItemInstance::SetCustomData(const std::string& identifier, float value) {
 	DeleteCustomData(identifier);
 	std::stringstream ss;
 	ss << value;
 	m_custom_data[identifier] = ss.str();
 }
 
-void EQEmu::ItemInstance::SetCustomData(std::string identifier, bool value) {
+void EQ::ItemInstance::SetCustomData(const std::string& identifier, bool value) {
 	DeleteCustomData(identifier);
 	std::stringstream ss;
 	ss << value;
 	m_custom_data[identifier] = ss.str();
 }
 
-void EQEmu::ItemInstance::DeleteCustomData(std::string identifier) {
+void EQ::ItemInstance::DeleteCustomData(const std::string& identifier) {
 	auto iter = m_custom_data.find(identifier);
 	if (iter != m_custom_data.end()) {
 		m_custom_data.erase(iter);
 	}
 }
 
-// Clone a type of EQEmu::ItemInstance object
+// Clone a type of EQ::ItemInstance object
 // c++ doesn't allow a polymorphic copy constructor,
 // so we have to resort to a polymorphic Clone()
-EQEmu::ItemInstance* EQEmu::ItemInstance::Clone() const
+EQ::ItemInstance* EQ::ItemInstance::Clone() const
 {
 	// Pseudo-polymorphic copy constructor
 	return new ItemInstance(*this);
 }
 
-bool EQEmu::ItemInstance::IsSlotAllowed(int16 slot_id) const {
-	// 'SupportsContainers' and 'slot_id > 21' previously saw the reassigned PowerSource slot (9999 to 22) as valid
+bool EQ::ItemInstance::IsSlotAllowed(int16 slot_id) const {
 	if (!m_item) { return false; }
 	else if (InventoryProfile::SupportsContainers(slot_id)) { return true; }
 	else if (m_item->Slots & (1 << slot_id)) { return true; }
-	else if (slot_id == inventory::slotPowerSource && (m_item->Slots & (1 << 22))) { return true; } // got lazy... <watch>
-	else if (slot_id != inventory::slotPowerSource && slot_id > legacy::EQUIPMENT_END) { return true; }
+	else if (slot_id > invslot::EQUIPMENT_END) { return true; } // why do we call 'InventoryProfile::SupportsContainers' with this here?
 	else { return false; }
 }
 
-bool EQEmu::ItemInstance::IsDroppable(bool recurse) const
+bool EQ::ItemInstance::IsDroppable(bool recurse) const
 {
 	if (!m_item)
 		return false;
@@ -841,14 +924,15 @@ bool EQEmu::ItemInstance::IsDroppable(bool recurse) const
 				return false;
 		}
 	}
-	
+
 	return true;
 }
 
-void EQEmu::ItemInstance::Initialize(SharedDatabase *db) {
+void EQ::ItemInstance::Initialize(SharedDatabase *db) {
 	// if there's no actual item, don't do anything
-	if (!m_item)
+	if (!m_item) {
 		return;
+	}
 
 	// initialize scaling items
 	if (m_item->CharmFileID != 0) {
@@ -857,12 +941,12 @@ void EQEmu::ItemInstance::Initialize(SharedDatabase *db) {
 	}
 
 	// initialize evolving items
-	else if ((db) && m_item->LoreGroup >= 1000 && m_item->LoreGroup != -1) {
+	else if (db && m_item->LoreGroup >= 1000) {
 		// not complete yet
 	}
 }
 
-void EQEmu::ItemInstance::ScaleItem() {
+void EQ::ItemInstance::ScaleItem() {
 	if (!m_item)
 		return;
 
@@ -946,18 +1030,18 @@ void EQEmu::ItemInstance::ScaleItem() {
 	m_scaledItem->CharmFileID = 0;	// this stops the client from trying to scale the item itself.
 }
 
-bool EQEmu::ItemInstance::EvolveOnAllKills() const {
+bool EQ::ItemInstance::EvolveOnAllKills() const {
 	return (m_evolveInfo && m_evolveInfo->AllKills);
 }
 
-int8 EQEmu::ItemInstance::GetMaxEvolveLvl() const {
+int8 EQ::ItemInstance::GetMaxEvolveLvl() const {
 	if (m_evolveInfo)
 		return m_evolveInfo->MaxLvl;
 	else
 		return 0;
 }
 
-uint32 EQEmu::ItemInstance::GetKillsNeeded(uint8 currentlevel) {
+uint32 EQ::ItemInstance::GetKillsNeeded(uint8 currentlevel) {
 	uint32 kills = -1;	// default to -1 (max uint32 value) because this value is usually divided by, so we don't want to ever return zero.
 	if (m_evolveInfo)
 		if (currentlevel != m_evolveInfo->MaxLvl)
@@ -969,38 +1053,38 @@ uint32 EQEmu::ItemInstance::GetKillsNeeded(uint8 currentlevel) {
 	return kills;
 }
 
-void EQEmu::ItemInstance::SetTimer(std::string name, uint32 time) {
+void EQ::ItemInstance::SetTimer(std::string name, uint32 time) {
 	Timer t(time);
 	t.Start(time, false);
 	m_timers[name] = t;
 }
 
-void EQEmu::ItemInstance::StopTimer(std::string name) {
+void EQ::ItemInstance::StopTimer(std::string name) {
 	auto iter = m_timers.find(name);
 	if(iter != m_timers.end()) {
 		m_timers.erase(iter);
 	}
 }
 
-void EQEmu::ItemInstance::ClearTimers() {
+void EQ::ItemInstance::ClearTimers() {
 	m_timers.clear();
 }
 
-int EQEmu::ItemInstance::GetItemArmorClass(bool augments) const
+int EQ::ItemInstance::GetItemArmorClass(bool augments) const
 {
 	int ac = 0;
 	const auto item = GetItem();
 	if (item) {
 		ac = item->AC;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					ac += GetAugment(i)->GetItemArmorClass();
 	}
 	return ac;
 }
 
-int EQEmu::ItemInstance::GetItemElementalDamage(int &magic, int &fire, int &cold, int &poison, int &disease, int &chromatic, int &prismatic, int &physical, int &corruption, bool augments) const
+int EQ::ItemInstance::GetItemElementalDamage(int &magic, int &fire, int &cold, int &poison, int &disease, int &chromatic, int &prismatic, int &physical, int &corruption, bool augments) const
 {
 	const auto item = GetItem();
 	if (item) {
@@ -1035,14 +1119,14 @@ int EQEmu::ItemInstance::GetItemElementalDamage(int &magic, int &fire, int &cold
 		}
 
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					GetAugment(i)->GetItemElementalDamage(magic, fire, cold, poison, disease, chromatic, prismatic, physical, corruption);
 	}
 	return magic + fire + cold + poison + disease + chromatic + prismatic + physical + corruption;
 }
 
-int EQEmu::ItemInstance::GetItemElementalFlag(bool augments) const
+int EQ::ItemInstance::GetItemElementalFlag(bool augments) const
 {
 	int flag = 0;
 	const auto item = GetItem();
@@ -1052,7 +1136,7 @@ int EQEmu::ItemInstance::GetItemElementalFlag(bool augments) const
 			return flag;
 
 		if (augments) {
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i) {
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i) {
 				if (GetAugment(i))
 					flag = GetAugment(i)->GetItemElementalFlag();
 				if (flag)
@@ -1063,9 +1147,9 @@ int EQEmu::ItemInstance::GetItemElementalFlag(bool augments) const
 	return flag;
 }
 
-int EQEmu::ItemInstance::GetItemElementalDamage(bool augments) const
+int EQ::ItemInstance::GetItemElementalDamage(bool augments) const
 {
-	int damage = 0;
+	int64 damage = 0;
 	const auto item = GetItem();
 	if (item) {
 		damage = item->ElemDmgAmt;
@@ -1073,7 +1157,7 @@ int EQEmu::ItemInstance::GetItemElementalDamage(bool augments) const
 			return damage;
 
 		if (augments) {
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i) {
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i) {
 				if (GetAugment(i))
 					damage = GetAugment(i)->GetItemElementalDamage();
 				if (damage)
@@ -1084,7 +1168,7 @@ int EQEmu::ItemInstance::GetItemElementalDamage(bool augments) const
 	return damage;
 }
 
-int EQEmu::ItemInstance::GetItemRecommendedLevel(bool augments) const
+int EQ::ItemInstance::GetItemRecommendedLevel(bool augments) const
 {
 	int level = 0;
 	const auto item = GetItem();
@@ -1092,7 +1176,7 @@ int EQEmu::ItemInstance::GetItemRecommendedLevel(bool augments) const
 		level = item->RecLevel;
 
 		if (augments) {
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i) {
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i) {
 				int temp = 0;
 				if (GetAugment(i)) {
 					temp = GetAugment(i)->GetItemRecommendedLevel();
@@ -1106,7 +1190,7 @@ int EQEmu::ItemInstance::GetItemRecommendedLevel(bool augments) const
 	return level;
 }
 
-int EQEmu::ItemInstance::GetItemRequiredLevel(bool augments) const
+int EQ::ItemInstance::GetItemRequiredLevel(bool augments) const
 {
 	int level = 0;
 	const auto item = GetItem();
@@ -1114,7 +1198,7 @@ int EQEmu::ItemInstance::GetItemRequiredLevel(bool augments) const
 		level = item->ReqLevel;
 
 		if (augments) {
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i) {
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i) {
 				int temp = 0;
 				if (GetAugment(i)) {
 					temp = GetAugment(i)->GetItemRequiredLevel();
@@ -1128,15 +1212,15 @@ int EQEmu::ItemInstance::GetItemRequiredLevel(bool augments) const
 	return level;
 }
 
-int EQEmu::ItemInstance::GetItemWeaponDamage(bool augments) const
+int EQ::ItemInstance::GetItemWeaponDamage(bool augments) const
 {
-	int damage = 0;
+	int64 damage = 0;
 	const auto item = GetItem();
 	if (item) {
 		damage = item->Damage;
 
 		if (augments) {
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					damage += GetAugment(i)->GetItemWeaponDamage();
 		}
@@ -1144,15 +1228,15 @@ int EQEmu::ItemInstance::GetItemWeaponDamage(bool augments) const
 	return damage;
 }
 
-int EQEmu::ItemInstance::GetItemBackstabDamage(bool augments) const
+int EQ::ItemInstance::GetItemBackstabDamage(bool augments) const
 {
-	int damage = 0;
+	int64 damage = 0;
 	const auto item = GetItem();
 	if (item) {
 		damage = item->BackstabDmg;
 
 		if (augments) {
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					damage += GetAugment(i)->GetItemBackstabDamage();
 		}
@@ -1160,7 +1244,7 @@ int EQEmu::ItemInstance::GetItemBackstabDamage(bool augments) const
 	return damage;
 }
 
-int EQEmu::ItemInstance::GetItemBaneDamageBody(bool augments) const
+int EQ::ItemInstance::GetItemBaneDamageBody(bool augments) const
 {
 	int body = 0;
 	const auto item = GetItem();
@@ -1170,7 +1254,7 @@ int EQEmu::ItemInstance::GetItemBaneDamageBody(bool augments) const
 			return body;
 
 		if (augments) {
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i)) {
 					body = GetAugment(i)->GetItemBaneDamageBody();
 					if (body)
@@ -1181,9 +1265,9 @@ int EQEmu::ItemInstance::GetItemBaneDamageBody(bool augments) const
 	return body;
 }
 
-int EQEmu::ItemInstance::GetItemBaneDamageRace(bool augments) const
+int EQ::ItemInstance::GetItemBaneDamageRace(bool augments) const
 {
-	int race = 0;
+	int race = Race::Doug;
 	const auto item = GetItem();
 	if (item) {
 		race = item->BaneDmgRace;
@@ -1191,7 +1275,7 @@ int EQEmu::ItemInstance::GetItemBaneDamageRace(bool augments) const
 			return race;
 
 		if (augments) {
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i)) {
 					race = GetAugment(i)->GetItemBaneDamageRace();
 					if (race)
@@ -1202,16 +1286,16 @@ int EQEmu::ItemInstance::GetItemBaneDamageRace(bool augments) const
 	return race;
 }
 
-int EQEmu::ItemInstance::GetItemBaneDamageBody(bodyType against, bool augments) const
+int EQ::ItemInstance::GetItemBaneDamageBody(uint8 against, bool augments) const
 {
-	int damage = 0;
+	int64 damage = 0;
 	const auto item = GetItem();
 	if (item) {
 		if (item->BaneDmgBody == against)
 			damage += item->BaneDmgAmt;
 
 		if (augments) {
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					damage += GetAugment(i)->GetItemBaneDamageBody(against);
 		}
@@ -1219,16 +1303,16 @@ int EQEmu::ItemInstance::GetItemBaneDamageBody(bodyType against, bool augments) 
 	return damage;
 }
 
-int EQEmu::ItemInstance::GetItemBaneDamageRace(uint16 against, bool augments) const
+int EQ::ItemInstance::GetItemBaneDamageRace(uint16 against, bool augments) const
 {
-	int damage = 0;
+	int64 damage = 0;
 	const auto item = GetItem();
 	if (item) {
 		if (item->BaneDmgRace == against)
 			damage += item->BaneDmgRaceAmt;
 
 		if (augments) {
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					damage += GetAugment(i)->GetItemBaneDamageRace(against);
 		}
@@ -1236,7 +1320,7 @@ int EQEmu::ItemInstance::GetItemBaneDamageRace(uint16 against, bool augments) co
 	return damage;
 }
 
-int EQEmu::ItemInstance::GetItemMagical(bool augments) const
+int EQ::ItemInstance::GetItemMagical(bool augments) const
 {
 	const auto item = GetItem();
 	if (item) {
@@ -1244,7 +1328,7 @@ int EQEmu::ItemInstance::GetItemMagical(bool augments) const
 			return 1;
 
 		if (augments) {
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i) && GetAugment(i)->GetItemMagical())
 					return 1;
 		}
@@ -1252,434 +1336,434 @@ int EQEmu::ItemInstance::GetItemMagical(bool augments) const
 	return 0;
 }
 
-int EQEmu::ItemInstance::GetItemHP(bool augments) const
+int EQ::ItemInstance::GetItemHP(bool augments) const
 {
 	int hp = 0;
 	const auto item = GetItem();
 	if (item) {
 		hp = item->HP;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					hp += GetAugment(i)->GetItemHP();
 	}
 	return hp;
 }
 
-int EQEmu::ItemInstance::GetItemMana(bool augments) const
+int EQ::ItemInstance::GetItemMana(bool augments) const
 {
 	int mana = 0;
 	const auto item = GetItem();
 	if (item) {
 		mana = item->Mana;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					mana += GetAugment(i)->GetItemMana();
 	}
 	return mana;
 }
 
-int EQEmu::ItemInstance::GetItemEndur(bool augments) const
+int EQ::ItemInstance::GetItemEndur(bool augments) const
 {
 	int endur = 0;
 	const auto item = GetItem();
 	if (item) {
 		endur = item->Endur;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					endur += GetAugment(i)->GetItemEndur();
 	}
 	return endur;
 }
 
-int EQEmu::ItemInstance::GetItemAttack(bool augments) const
+int EQ::ItemInstance::GetItemAttack(bool augments) const
 {
 	int atk = 0;
 	const auto item = GetItem();
 	if (item) {
 		atk = item->Attack;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					atk += GetAugment(i)->GetItemAttack();
 	}
 	return atk;
 }
 
-int EQEmu::ItemInstance::GetItemStr(bool augments) const
+int EQ::ItemInstance::GetItemStr(bool augments) const
 {
 	int str = 0;
 	const auto item = GetItem();
 	if (item) {
 		str = item->AStr;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					str += GetAugment(i)->GetItemStr();
 	}
 	return str;
 }
 
-int EQEmu::ItemInstance::GetItemSta(bool augments) const
+int EQ::ItemInstance::GetItemSta(bool augments) const
 {
 	int sta = 0;
 	const auto item = GetItem();
 	if (item) {
 		sta = item->ASta;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					sta += GetAugment(i)->GetItemSta();
 	}
 	return sta;
 }
 
-int EQEmu::ItemInstance::GetItemDex(bool augments) const
+int EQ::ItemInstance::GetItemDex(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->ADex;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemDex();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemAgi(bool augments) const
+int EQ::ItemInstance::GetItemAgi(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->AAgi;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemAgi();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemInt(bool augments) const
+int EQ::ItemInstance::GetItemInt(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->AInt;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemInt();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemWis(bool augments) const
+int EQ::ItemInstance::GetItemWis(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->AWis;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemWis();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemCha(bool augments) const
+int EQ::ItemInstance::GetItemCha(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->ACha;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemCha();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemMR(bool augments) const
+int EQ::ItemInstance::GetItemMR(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->MR;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemMR();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemFR(bool augments) const
+int EQ::ItemInstance::GetItemFR(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->FR;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemFR();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemCR(bool augments) const
+int EQ::ItemInstance::GetItemCR(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->CR;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemCR();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemPR(bool augments) const
+int EQ::ItemInstance::GetItemPR(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->PR;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemPR();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemDR(bool augments) const
+int EQ::ItemInstance::GetItemDR(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->DR;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemDR();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemCorrup(bool augments) const
+int EQ::ItemInstance::GetItemCorrup(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->SVCorruption;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemCorrup();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemHeroicStr(bool augments) const
+int EQ::ItemInstance::GetItemHeroicStr(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->HeroicStr;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemHeroicStr();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemHeroicSta(bool augments) const
+int EQ::ItemInstance::GetItemHeroicSta(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->HeroicSta;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemHeroicSta();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemHeroicDex(bool augments) const
+int EQ::ItemInstance::GetItemHeroicDex(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->HeroicDex;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemHeroicDex();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemHeroicAgi(bool augments) const
+int EQ::ItemInstance::GetItemHeroicAgi(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->HeroicAgi;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemHeroicAgi();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemHeroicInt(bool augments) const
+int EQ::ItemInstance::GetItemHeroicInt(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->HeroicInt;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemHeroicInt();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemHeroicWis(bool augments) const
+int EQ::ItemInstance::GetItemHeroicWis(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->HeroicWis;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemHeroicWis();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemHeroicCha(bool augments) const
+int EQ::ItemInstance::GetItemHeroicCha(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->HeroicCha;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemHeroicCha();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemHeroicMR(bool augments) const
+int EQ::ItemInstance::GetItemHeroicMR(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->HeroicMR;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemHeroicMR();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemHeroicFR(bool augments) const
+int EQ::ItemInstance::GetItemHeroicFR(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->HeroicFR;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemHeroicFR();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemHeroicCR(bool augments) const
+int EQ::ItemInstance::GetItemHeroicCR(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->HeroicCR;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemHeroicCR();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemHeroicPR(bool augments) const
+int EQ::ItemInstance::GetItemHeroicPR(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->HeroicPR;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemHeroicPR();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemHeroicDR(bool augments) const
+int EQ::ItemInstance::GetItemHeroicDR(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->HeroicDR;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemHeroicDR();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemHeroicCorrup(bool augments) const
+int EQ::ItemInstance::GetItemHeroicCorrup(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->HeroicSVCorrup;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i))
 					total += GetAugment(i)->GetItemHeroicCorrup();
 	}
 	return total;
 }
 
-int EQEmu::ItemInstance::GetItemHaste(bool augments) const
+int EQ::ItemInstance::GetItemHaste(bool augments) const
 {
 	int total = 0;
 	const auto item = GetItem();
 	if (item) {
 		total = item->Haste;
 		if (augments)
-			for (int i = inventory::socketBegin; i < inventory::SocketCount; ++i)
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i)
 				if (GetAugment(i)) {
 					int temp = GetAugment(i)->GetItemHaste();
 					if (temp > total)
@@ -1689,6 +1773,184 @@ int EQEmu::ItemInstance::GetItemHaste(bool augments) const
 	return total;
 }
 
+int EQ::ItemInstance::RemoveTaskDeliveredItems()
+{
+	int count = IsStackable() ? GetCharges() : 1;
+	count -= GetTaskDeliveredCount();
+	if (IsStackable())
+	{
+		SetCharges(count);
+	}
+	SetTaskDeliveredCount(0);
+	return count;
+}
+
+uint32 EQ::ItemInstance::GetItemGuildFavor() const
+{
+	uint32 total = 0;
+	const auto item = GetItem();
+	if (item) {
+		return total = item->GuildFavor;
+	}
+	return 0;
+}
+
+std::vector<uint32> EQ::ItemInstance::GetAugmentIDs() const
+{
+	std::vector<uint32> augments;
+
+	for (uint8 slot_id = invaug::SOCKET_BEGIN; slot_id <= invaug::SOCKET_END; slot_id++) {
+		augments.push_back(GetAugment(slot_id) ? GetAugmentItemID(slot_id) : 0);
+	}
+
+	return augments;
+}
+
+int EQ::ItemInstance::GetItemRegen(bool augments) const
+{
+	int        stat = 0;
+	const auto item = GetItem();
+	if (item) {
+		stat = item->Regen;
+		if (augments) {
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i) {
+				if (GetAugment(i)) {
+					stat += GetAugment(i)->GetItemRegen();
+				}
+			}
+		}
+	}
+	return stat;
+}
+
+int EQ::ItemInstance::GetItemManaRegen(bool augments) const
+{
+	int        stat = 0;
+	const auto item = GetItem();
+	if (item) {
+		stat = item->ManaRegen;
+		if (augments) {
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i) {
+				if (GetAugment(i)) {
+					stat += GetAugment(i)->GetItemManaRegen();
+				}
+			}
+		}
+	}
+	return stat;
+}
+
+int EQ::ItemInstance::GetItemDamageShield(bool augments) const
+{
+	int        stat = 0;
+	const auto item = GetItem();
+	if (item) {
+		stat = item->DamageShield;
+		if (augments) {
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i) {
+				if (GetAugment(i)) {
+					stat += GetAugment(i)->GetItemDamageShield();
+				}
+			}
+		}
+	}
+	return stat;
+}
+
+int EQ::ItemInstance::GetItemDSMitigation(bool augments) const
+{
+	int        stat = 0;
+	const auto item = GetItem();
+	if (item) {
+		stat = item->DSMitigation;
+		if (augments) {
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i) {
+				if (GetAugment(i)) {
+					stat += GetAugment(i)->GetItemDSMitigation();
+				}
+			}
+		}
+	}
+	return stat;
+}
+
+int EQ::ItemInstance::GetItemHealAmt(bool augments) const
+{
+	int        stat = 0;
+	const auto item = GetItem();
+	if (item) {
+		stat = item->HealAmt;
+		if (augments) {
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i) {
+				if (GetAugment(i)) {
+					stat += GetAugment(i)->GetItemHealAmt();
+				}
+			}
+		}
+	}
+	return stat;
+}
+
+int EQ::ItemInstance::GetItemSpellDamage(bool augments) const
+{
+	int        stat = 0;
+	const auto item = GetItem();
+	if (item) {
+		stat = item->SpellDmg;
+		if (augments) {
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i) {
+				if (GetAugment(i)) {
+					stat += GetAugment(i)->GetItemSpellDamage();
+				}
+			}
+		}
+	}
+	return stat;
+}
+
+int EQ::ItemInstance::GetItemClairvoyance(bool augments) const
+{
+	int        stat = 0;
+	const auto item = GetItem();
+	if (item) {
+		stat = item->Clairvoyance;
+		if (augments) {
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i) {
+				if (GetAugment(i)) {
+					stat += GetAugment(i)->GetItemClairvoyance();
+				}
+			}
+		}
+	}
+	return stat;
+}
+
+int EQ::ItemInstance::GetItemSkillsStat(EQ::skills::SkillType skill, bool augments) const
+{
+	int        stat = 0;
+	const auto item = GetItem();
+	if (item) {
+		stat = item->ExtraDmgSkill == skill ? item->ExtraDmgAmt : 0;
+		if (augments) {
+			for (int i = invaug::SOCKET_BEGIN; i <= invaug::SOCKET_END; ++i) {
+				if (GetAugment(i)) {
+					stat += GetAugment(i)->GetItemSkillsStat(skill);
+				}
+			}
+		}
+	}
+	return stat;
+}
+
+void EQ::ItemInstance::AddGUIDToMap(uint64 existing_serial_number)
+{
+	guids.emplace(existing_serial_number);
+}
+
+void EQ::ItemInstance::ClearGUIDMap()
+{
+	guids.clear();
+}
 //
 // class EvolveInfo
 //

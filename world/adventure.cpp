@@ -1,9 +1,10 @@
+#include <glm/vec4.hpp>
 #include "../common/global_define.h"
 #include "../common/servertalk.h"
 #include "../common/extprofile.h"
 #include "../common/rulesys.h"
 #include "../common/misc_functions.h"
-#include "../common/string_util.h"
+#include "../common/strings.h"
 #include "../common/random.h"
 #include "adventure.h"
 #include "adventure_manager.h"
@@ -11,11 +12,13 @@
 #include "zonelist.h"
 #include "clientlist.h"
 #include "cliententry.h"
+#include "../common/zone_store.h"
+#include "../common/repositories/character_corpses_repository.h"
 
 extern ZSList zoneserver_list;
 extern ClientList client_list;
 extern AdventureManager adventure_manager;
-extern EQEmu::Random emu_random;
+extern EQ::Random emu_random;
 
 Adventure::Adventure(AdventureTemplate *t)
 {
@@ -27,20 +30,17 @@ Adventure::Adventure(AdventureTemplate *t)
 	instance_id = 0;
 }
 
-Adventure::Adventure(AdventureTemplate *t, int count, int assassination_count, AdventureStatus status, uint16 instance_id, uint32 time_left)
+Adventure::Adventure(AdventureTemplate *t, int in_count, int in_assassination_count, AdventureStatus in_status, uint16 in_instance_id, uint32 time_left)
 {
 	adventure_template = t;
-	this->count = count;
-	this->assassination_count = assassination_count;
-	this->status = status;
-	this->instance_id = instance_id;
+	count = in_count;
+	assassination_count = in_assassination_count;
+	status = in_status;
+	instance_id = in_instance_id;
 
-	if(status == AS_Finished)
-	{
+	if (in_status == AS_Finished) {
 		database.SetInstanceDuration(instance_id, time_left);
-	}
-	else
-	{
+	} else {
 		database.SetInstanceDuration(instance_id, time_left + 60);
 	}
 
@@ -56,7 +56,7 @@ void Adventure::AddPlayer(std::string character_name, bool add_client_to_instanc
 {
 	if(!PlayerExists(character_name))
 	{
-		int32 character_id = database.GetCharacterID(character_name.c_str());
+		int32 character_id = database.GetCharacterID(character_name);
 		if(character_id && add_client_to_instance)
 		{
 			database.AddClientToInstance(instance_id, character_id);
@@ -72,7 +72,7 @@ void Adventure::RemovePlayer(std::string character_name)
 	{
 		if((*iter).compare(character_name) == 0)
 		{
-			int32 character_id = database.GetCharacterID(character_name.c_str());
+			int32 character_id = database.GetCharacterID(character_name);
 			if (character_id)
 			{
 				database.RemoveClientFromInstance(instance_id, character_id);
@@ -84,7 +84,7 @@ void Adventure::RemovePlayer(std::string character_name)
 	}
 }
 
-bool Adventure::PlayerExists(std::string character_name)
+bool Adventure::PlayerExists(const std::string& character_name)
 {
 	auto iter = players.begin();
 	while(iter != players.end())
@@ -122,7 +122,7 @@ bool Adventure::Process()
 		else if(status == AS_WaitingForPrimaryEndTime)
 		{
 			//Do partial failure: send a message to the clients that they can only get a certain amount of points.
-			SendAdventureMessage(13, "You failed to complete your adventure in time. Complete your adventure goal within 30 minutes to "
+			SendAdventureMessage(Chat::Red, "You failed to complete your adventure in time. Complete your adventure goal within 30 minutes to "
 				"receive a lesser reward. This adventure will end in 30 minutes and your party will be ejected from the dungeon.");
 			SetStatus(AS_WaitingForSecondaryEndTime);
 		}
@@ -143,7 +143,7 @@ bool Adventure::Process()
 
 bool Adventure::CreateInstance()
 {
-	uint32 zone_id = database.GetZoneID(adventure_template->zone);
+	uint32 zone_id = ZoneID(adventure_template->zone);
 	if(!zone_id)
 	{
 		return false;
@@ -177,7 +177,6 @@ void Adventure::SetStatus(AdventureStatus new_status)
 		ut->instance_id = instance_id;
 		ut->new_duration = adventure_template->duration + 60;
 
-		pack->Deflate();
 		zoneserver_list.SendPacket(0, instance_id, pack);
 		safe_delete(pack);
 	}
@@ -192,7 +191,6 @@ void Adventure::SetStatus(AdventureStatus new_status)
 		ut->instance_id = instance_id;
 		ut->new_duration = 1860;
 
-		pack->Deflate();
 		zoneserver_list.SendPacket(0, instance_id, pack);
 		safe_delete(pack);
 	}
@@ -207,7 +205,6 @@ void Adventure::SetStatus(AdventureStatus new_status)
 		ut->instance_id = instance_id;
 		ut->new_duration = 1860;
 
-		pack->Deflate();
 		zoneserver_list.SendPacket(0, instance_id, pack);
 		safe_delete(pack);
 	}
@@ -285,88 +282,78 @@ void Adventure::IncrementAssassinationCount()
 void Adventure::Finished(AdventureWinStatus ws)
 {
 	auto iter = players.begin();
-	while(iter != players.end())
-	{
+	while (iter != players.end()) {
 		ClientListEntry *current = client_list.FindCharacter((*iter).c_str());
-		if(current)
-		{
-			if(current->Online() == CLE_Status_InZone)
-			{
+		auto character_id = database.GetCharacterID(*iter);
+
+		if (character_id == 0) {
+			++iter;
+			continue;
+		}
+
+		if (current) {
+			if (current->Online() == CLE_Status::InZone) {
 				//We can send our packets only.
-				auto pack =
-				    new ServerPacket(ServerOP_AdventureFinish, sizeof(ServerAdventureFinish_Struct));
+				auto pack = new ServerPacket(ServerOP_AdventureFinish, sizeof(ServerAdventureFinish_Struct));
 				ServerAdventureFinish_Struct *af = (ServerAdventureFinish_Struct*)pack->pBuffer;
 				strcpy(af->player, (*iter).c_str());
 				af->theme = GetTemplate()->theme;
-				if(ws == AWS_Win)
-				{
+				if (ws == AWS_Win) {
 					af->win = true;
 					af->points = GetTemplate()->win_points;
 				}
-				else if(ws == AWS_SecondPlace)
-				{
+				else if (ws == AWS_SecondPlace) {
 					af->win = true;
 					af->points = GetTemplate()->lose_points;
 				}
-				else
-				{
+				else {
 					af->win = false;
 					af->points = 0;
 				}
-				pack->Deflate();
 				zoneserver_list.SendPacket(current->zone(), current->instance(), pack);
-				database.UpdateAdventureStatsEntry(database.GetCharacterID((*iter).c_str()), GetTemplate()->theme, (ws != AWS_Lose) ? true : false);
+				database.UpdateAdventureStatsEntry(character_id, GetTemplate()->theme, (ws != AWS_Lose) ? true : false);
 				delete pack;
 			}
-			else
-			{
+			else {
 				AdventureFinishEvent afe;
 				afe.name = (*iter);
-				if(ws == AWS_Win)
-				{
+				if (ws == AWS_Win) {
 					afe.theme = GetTemplate()->theme;
 					afe.points = GetTemplate()->win_points;
 					afe.win = true;
 				}
-				else if(ws == AWS_SecondPlace)
-				{
+				else if (ws == AWS_SecondPlace) {
 					afe.theme = GetTemplate()->theme;
 					afe.points = GetTemplate()->lose_points;
 					afe.win = true;
 				}
-				else
-				{
+				else {
 					afe.win = false;
 					afe.points = 0;
 				}
 				adventure_manager.AddFinishedEvent(afe);
-				database.UpdateAdventureStatsEntry(database.GetCharacterID((*iter).c_str()), GetTemplate()->theme, (ws != AWS_Lose) ? true : false);
+				database.UpdateAdventureStatsEntry(character_id, GetTemplate()->theme, (ws != AWS_Lose) ? true : false);
 			}
 		}
-		else
-		{
+		else {
 			AdventureFinishEvent afe;
 			afe.name = (*iter);
-			if(ws == AWS_Win)
-			{
+			if (ws == AWS_Win) {
 				afe.theme = GetTemplate()->theme;
 				afe.points = GetTemplate()->win_points;
 				afe.win = true;
 			}
-			else if(ws == AWS_SecondPlace)
-			{
+			else if (ws == AWS_SecondPlace) {
 				afe.theme = GetTemplate()->theme;
 				afe.points = GetTemplate()->lose_points;
 				afe.win = true;
 			}
-			else
-			{
+			else {
 				afe.win = false;
 				afe.points = 0;
 			}
 			adventure_manager.AddFinishedEvent(afe);
-			
-			database.UpdateAdventureStatsEntry(database.GetCharacterID((*iter).c_str()), GetTemplate()->theme, (ws != AWS_Lose) ? true : false);
+			database.UpdateAdventureStatsEntry(character_id, GetTemplate()->theme, (ws != AWS_Lose) ? true : false);
 		}
 		++iter;
 	}
@@ -375,54 +362,53 @@ void Adventure::Finished(AdventureWinStatus ws)
 
 void Adventure::MoveCorpsesToGraveyard()
 {
-	if(GetTemplate()->graveyard_zone_id == 0)
-	{
+	if (GetTemplate()->graveyard_zone_id == 0) {
 		return;
 	}
 
-	std::list<uint32> dbid_list;
-	std::list<uint32> charid_list;
+	glm::vec4 position;
 
-	std::string query = StringFormat("SELECT id, charid FROM character_corpses WHERE instanceid=%d", GetInstanceID());
-	auto results = database.QueryDatabase(query);
-	if(!results.Success())
+	float x = GetTemplate()->graveyard_x + emu_random.Real(-GetTemplate()->graveyard_radius, GetTemplate()->graveyard_radius);
+	float y = GetTemplate()->graveyard_y + emu_random.Real(-GetTemplate()->graveyard_radius, GetTemplate()->graveyard_radius);
+	float z = GetTemplate()->graveyard_z;
 
-	for(auto row = results.begin(); row != results.end(); ++row) {
-        dbid_list.push_back(atoi(row[0]));
-        charid_list.push_back(atoi(row[1]));
-    }
+	position.x = x;
+	position.y = y;
+	position.z = z;
+	position.w = 0.0f;
 
-    for (auto &elem : dbid_list) {
-		float x = GetTemplate()->graveyard_x + emu_random.Real(-GetTemplate()->graveyard_radius, GetTemplate()->graveyard_radius);
-		float y = GetTemplate()->graveyard_y + emu_random.Real(-GetTemplate()->graveyard_radius, GetTemplate()->graveyard_radius);
-		float z = GetTemplate()->graveyard_z;
+	CharacterCorpsesRepository::SendAdventureCorpsesToGraveyard(database, GetTemplate()->graveyard_zone_id, GetInstanceID(), position);
 
-		query = StringFormat("UPDATE character_corpses "
-                            "SET zoneid = %d, instanceid = 0, "
-                            "x = %f, y = %f, z = %f WHERE instanceid = %d",
-                            GetTemplate()->graveyard_zone_id,
-                            x, y, z, GetInstanceID());
-		database.QueryDatabase(query);
-	}
+	const auto& l = CharacterCorpsesRepository::GetWhere(
+		database,
+		fmt::format(
+			"`instance_id` = {}",
+			GetInstanceID()
+		)
+	);
 
-    auto c_iter = charid_list.begin();
-	for (auto iter = dbid_list.begin(); iter != dbid_list.end(); ++iter, ++c_iter)
-	{
-		auto pack =
-		    new ServerPacket(ServerOP_DepopAllPlayersCorpses, sizeof(ServerDepopAllPlayersCorpses_Struct));
-		ServerDepopAllPlayersCorpses_Struct *dpc = (ServerDepopAllPlayersCorpses_Struct*)pack->pBuffer;
-		dpc->CharacterID = (*c_iter);
-		dpc->InstanceID = 0;
-		dpc->ZoneID = GetTemplate()->graveyard_zone_id;
+	for (const auto& e : l) {
+		auto pack = new ServerPacket(ServerOP_DepopAllPlayersCorpses, sizeof(ServerDepopAllPlayersCorpses_Struct));
+
+		auto d = (ServerDepopAllPlayersCorpses_Struct*) pack->pBuffer;
+
+		d->CharacterID = e.charid;
+		d->InstanceID  = 0;
+		d->ZoneID      = GetTemplate()->graveyard_zone_id;
+
 		zoneserver_list.SendPacket(0, GetInstanceID(), pack);
+
 		delete pack;
 
 		pack = new ServerPacket(ServerOP_SpawnPlayerCorpse, sizeof(SpawnPlayerCorpse_Struct));
-		SpawnPlayerCorpse_Struct* spc = (SpawnPlayerCorpse_Struct*)pack->pBuffer;
-		spc->player_corpse_id = (*iter);
-		spc->zone_id = GetTemplate()->graveyard_zone_id;
+
+		auto spc = (SpawnPlayerCorpse_Struct*) pack->pBuffer;
+
+		spc->player_corpse_id = e.id;
+		spc->zone_id          = GetTemplate()->graveyard_zone_id;
 
 		zoneserver_list.SendPacket(spc->zone_id, 0, pack);
+
 		delete pack;
 	}
 }

@@ -18,32 +18,33 @@
 
 #include "faction.h"
 #include "races.h"
+#include "rulesys.h"
 
-const char *FactionValueToString(FACTION_VALUE fv)
+const char *FactionValueToString(FACTION_VALUE faction_value)
 {
-	switch (fv) {
+	switch (faction_value) {
 		case FACTION_ALLY:
-			return ("Ally");
+			return "Ally";
 		case FACTION_WARMLY:
-			return ("Warmly");
+			return "Warmly";
 		case FACTION_KINDLY:
-			return ("Kindly");
-		case FACTION_AMIABLE:
-			return ("Amiable");
-		case FACTION_INDIFFERENT:
-			return ("Indifferent");
-		case FACTION_APPREHENSIVE:
-			return ("Apprehensive");
-		case FACTION_DUBIOUS:
-			return ("Dubious");
-		case FACTION_THREATENLY:
-			return ("Threatenly");
+			return "Kindly";
+		case FACTION_AMIABLY:
+			return "Amiably";
+		case FACTION_INDIFFERENTLY:
+			return "Indifferently";
+		case FACTION_APPREHENSIVELY:
+			return "Apprehensively";
+		case FACTION_DUBIOUSLY:
+			return "Dubiously";
+		case FACTION_THREATENINGLY:
+			return "Threateningly";
 		case FACTION_SCOWLS:
-			return ("Scowls, ready to attack.");
+			return "Scowls";
 		default:
 			break;
 	}
-	return ("Unknown Faction Con");
+	return "Unknown";
 }
 
 
@@ -59,34 +60,31 @@ FACTION_VALUE CalculateFaction(FactionMods* fm, int32 tmpCharacter_value)
 	if (fm) {
 		character_value += fm->base + fm->class_mod + fm->race_mod + fm->deity_mod;
 	}
-	if (character_value >= 1101) {
+	if (character_value >= RuleI(Faction, AllyFactionMinimum)) {
 		return FACTION_ALLY;
 	}
-	if (character_value >= 701 && character_value <= 1100) {
+	if (character_value >= RuleI(Faction, WarmlyFactionMinimum)) {
 		return FACTION_WARMLY;
 	}
-	if (character_value >= 401 && character_value <= 700) {
+	if (character_value >= RuleI(Faction, KindlyFactionMinimum)) {
 		return FACTION_KINDLY;
 	}
-	if (character_value >= 101 && character_value <= 400) {
-		return FACTION_AMIABLE;
+	if (character_value >= RuleI(Faction, AmiablyFactionMinimum)) {
+		return FACTION_AMIABLY;
 	}
-	if (character_value >= 0 && character_value <= 100) {
-		return FACTION_INDIFFERENT;
+	if (character_value >= RuleI(Faction, IndifferentlyFactionMinimum)) {
+		return FACTION_INDIFFERENTLY;
 	}
-	if (character_value >= -100 && character_value <= -1) {
-		return FACTION_APPREHENSIVE;
+	if (character_value >= RuleI(Faction, ApprehensivelyFactionMinimum)) {
+		return FACTION_APPREHENSIVELY;
 	}
-	if (character_value >= -700 && character_value <= -101) {
-		return FACTION_DUBIOUS;
+	if (character_value >= RuleI(Faction, DubiouslyFactionMinimum)) {
+		return FACTION_DUBIOUSLY;
 	}
-	if (character_value >= -999 && character_value <= -701) {
-		return FACTION_THREATENLY;
+	if (character_value >= RuleI(Faction, ThreateninglyFactionMinimum)) {
+		return FACTION_THREATENINGLY;
 	}
-	if (character_value <= -1000) {
-		return FACTION_SCOWLS;
-	}
-	return FACTION_INDIFFERENT;
+	return FACTION_SCOWLS;
 }
 
 // this function should check if some races have more than one race define
@@ -98,12 +96,12 @@ bool IsOfEqualRace(int r1, int r2)
 	// TODO: add more values
 	switch (r1) {
 		case DARK_ELF:
-			if (r2 == 77) {
+			if (r2 == Race::NeriakCitizen) {
 				return true;
 			}
 			break;
 		case BARBARIAN:
-			if (r2 == 90) {
+			if (r2 == Race::HalasCitizen) {
 				return true;
 			}
 	}

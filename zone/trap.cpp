@@ -17,13 +17,14 @@
 */
 
 #include "../common/spdat.h"
-#include "../common/string_util.h"
-#include "../common/types.h"
+#include "../common/strings.h"
 
 #include "client.h"
 #include "entity.h"
 #include "mob.h"
 #include "trap.h"
+#include "../common/repositories/criteria/content_filter_criteria.h"
+#include "../common/repositories/traps_repository.h"
 
 /*
 
@@ -52,10 +53,12 @@ CREATE TABLE traps (
 Trap::Trap() :
 	Entity(),
 	respawn_timer(600000),
-	chkarea_timer(500),
+	chkarea_timer(1000),
+	reset_timer(5000),
 	m_Position(glm::vec3())
 {
 	trap_id = 0;
+	db_id = 0;
 	maxzdiff = 0;
 	radius = 0;
 	effect = 0;
@@ -64,12 +67,19 @@ Trap::Trap() :
 	skill = 0;
 	level = 0;
 	respawn_timer.Disable();
+	reset_timer.Disable();
 	detected = false;
 	disarmed = false;
 	respawn_time = 0;
 	respawn_var = 0;
-	hiddenTrigger = nullptr;
-	ownHiddenTrigger = false;
+	SetHiddenTrigger(nullptr);
+	chance = 0;
+	triggered_number = 0;
+	times_triggered = 0;
+	group = 0;
+	despawn_when_triggered = false;
+	charid = 0;
+	undetectable = false;
 }
 
 Trap::~Trap()
@@ -80,15 +90,25 @@ Trap::~Trap()
 
 bool Trap::Process()
 {
-	if (chkarea_timer.Enabled() && chkarea_timer.Check()
-		/*&& zone->GetClientCount() > 0*/ )
+	if (chkarea_timer.Enabled() && chkarea_timer.Check() && !reset_timer.Enabled())
 	{
-		Mob* trigger = entity_list.GetTrapTrigger(this);
-		if (trigger && !(trigger->IsClient() && trigger->CastToClient()->GetGM()))
-		{
-			Trigger(trigger);
+		Mob* m = entity_list.GetTrapTrigger(this);
+		const bool is_gm_client = m && m->IsClient() && m->CastToClient()->GetGM();
+		if (m && !is_gm_client) {
+			Trigger(m);
+		}
+
+		if (is_gm_client) {
+			m->Message(Chat::White, "Your GM flag prevents you from triggering a trap.");
 		}
 	}
+	else if (reset_timer.Enabled() && reset_timer.Check())
+	{
+		Log(Logs::General, Logs::Traps, "Reset timer disabled in Reset Check Process for trap %d.", trap_id);
+		reset_timer.Disable();
+		charid = 0;
+	}
+
 	if (respawn_timer.Enabled() && respawn_timer.Check())
 	{
 		detected = false;
@@ -96,11 +116,15 @@ bool Trap::Process()
 		chkarea_timer.Enable();
 		respawn_timer.Disable();
 	}
+
+
 	return true;
 }
 
 void Trap::Trigger(Mob* trigger)
 {
+	Log(Logs::General, Logs::Traps, "Trap %d triggered by %s for the %d time!", trap_id, trigger->GetName(), times_triggered + 1);
+
 	int i = 0;
 	const NPCType* tmp = 0;
 	switch (effect)
@@ -115,7 +139,7 @@ void Trap::Trigger(Mob* trigger)
 				entity_list.MessageClose(trigger,false,100,13,"%s",message.c_str());
 			}
 			if(hiddenTrigger){
-				hiddenTrigger->SpellFinished(effectvalue, trigger, EQEmu::CastingSlot::Item, 0, -1, spells[effectvalue].ResistDiff);
+				hiddenTrigger->SpellFinished(effectvalue, trigger, EQ::spells::CastingSlot::Item, 0, -1, spells[effectvalue].resist_difficulty);
 			}
 			break;
 		case trapTypeAlarm:
@@ -128,7 +152,7 @@ void Trap::Trigger(Mob* trigger)
 				entity_list.MessageClose(trigger,false,effectvalue,13,"%s",message.c_str());
 			}
 
-			entity_list.SendAlarm(this,trigger,effectvalue);
+			entity_list.SendAlarm(this,trigger, effectvalue2);
 			break;
 		case trapTypeMysticSpawn:
 			if (message.empty())
@@ -142,12 +166,14 @@ void Trap::Trigger(Mob* trigger)
 
 			for (i = 0; i < effectvalue2; i++)
 			{
-				if ((tmp = database.LoadNPCTypesData(effectvalue)))
+				if ((tmp = content_db.LoadNPCTypesData(effectvalue)))
 				{
 					auto randomOffset = glm::vec4(zone->random.Int(-5, 5),zone->random.Int(-5, 5),zone->random.Int(-5, 5), zone->random.Int(0, 249));
 					auto spawnPosition = randomOffset + glm::vec4(m_Position, 0.0f);
-					auto new_npc = new NPC(tmp, nullptr, spawnPosition, FlyMode3);
+					auto new_npc = new NPC(tmp, nullptr, spawnPosition, GravityBehavior::Flying);
 					new_npc->AddLootTable();
+					if (new_npc->DropsGlobalLoot())
+						new_npc->CheckGlobalLootTables();
 					entity_list.AddNPC(new_npc);
 					new_npc->AddToHateList(trigger,1);
 				}
@@ -165,12 +191,14 @@ void Trap::Trigger(Mob* trigger)
 
 			for (i = 0; i < effectvalue2; i++)
 			{
-				if ((tmp = database.LoadNPCTypesData(effectvalue)))
+				if ((tmp = content_db.LoadNPCTypesData(effectvalue)))
 				{
 					auto randomOffset = glm::vec4(zone->random.Int(-2, 2), zone->random.Int(-2, 2), zone->random.Int(-2, 2), zone->random.Int(0, 249));
 					auto spawnPosition = randomOffset + glm::vec4(m_Position, 0.0f);
-					auto new_npc = new NPC(tmp, nullptr, spawnPosition, FlyMode3);
+					auto new_npc = new NPC(tmp, nullptr, spawnPosition, GravityBehavior::Flying);
 					new_npc->AddLootTable();
+					if (new_npc->DropsGlobalLoot())
+						new_npc->CheckGlobalLootTables();
 					entity_list.AddNPC(new_npc);
 					new_npc->AddToHateList(trigger,1);
 				}
@@ -185,14 +213,13 @@ void Trap::Trigger(Mob* trigger)
 			{
 				entity_list.MessageClose(trigger,false,100,13,"%s",message.c_str());
 			}
-			if(trigger->IsClient())
-			{
+			if (trigger && trigger->IsClient()) {
 				auto outapp = new EQApplicationPacket(OP_Damage, sizeof(CombatDamage_Struct));
 				CombatDamage_Struct* a = (CombatDamage_Struct*)outapp->pBuffer;
-				int dmg = zone->random.Int(effectvalue, effectvalue2);
+				int64 dmg = zone->random.Int(effectvalue, effectvalue2);
 				trigger->SetHP(trigger->GetHP() - dmg);
 				a->damage = dmg;
-				a->meleepush_xy = zone->random.Int(0, 1234567);
+				a->hit_heading = 0.0f;
 				a->source = GetHiddenTrigger()!=nullptr ? GetHiddenTrigger()->GetID() : trigger->GetID();
 				a->spellid = 0;
 				a->target = trigger->GetID();
@@ -201,12 +228,40 @@ void Trap::Trigger(Mob* trigger)
 				safe_delete(outapp);
 			}
 	}
-	respawn_timer.Start((respawn_time + zone->random.Int(0, respawn_var)) * 1000);
-	chkarea_timer.Disable();
-	disarmed = true;
+
+	if (trigger && trigger->IsClient()) {
+		trigger->CastToClient()->trapid = trap_id;
+		charid = trigger->CastToClient()->CharacterID();
+	}
+
+	bool update = false;
+	if (despawn_when_triggered)
+	{
+		Log(Logs::General, Logs::Traps, "Trap %d is despawning after being triggered.", trap_id);
+		update = true;
+	}
+	else
+	{
+		reset_timer.Start(5000);
+	}
+
+	if (triggered_number > 0)
+		++times_triggered;
+
+	if (triggered_number > 0 && triggered_number <= times_triggered)
+	{
+		Log(Logs::General, Logs::Traps, "Triggered number for trap %d reached. %d/%d", trap_id, times_triggered, triggered_number);
+		update = true;
+	}
+
+	if (update)
+	{
+		UpdateTrap();
+	}
 }
 
-Trap* EntityList::FindNearbyTrap(Mob* searcher, float max_dist) {
+Trap* EntityList::FindNearbyTrap(Mob* searcher, float max_dist, float &trap_curdist, bool detected)
+{
 	float dist = 999999;
 	Trap* current_trap = nullptr;
 
@@ -215,76 +270,241 @@ Trap* EntityList::FindNearbyTrap(Mob* searcher, float max_dist) {
 
 	for (auto it = trap_list.begin(); it != trap_list.end(); ++it) {
 		cur = it->second;
-		if(cur->disarmed)
+		if(cur->disarmed || (detected && !cur->detected) || cur->undetectable)
 			continue;
 
 		auto diff = glm::vec3(searcher->GetPosition()) - cur->m_Position;
-		float curdist = diff.x * diff.x + diff.y * diff.y + diff.z * diff.z;
+		float curdist = diff.x*diff.x + diff.y*diff.y;
+		diff.z = std::abs(diff.z);
 
-		if (curdist < max_dist2 && curdist < dist)
+		if (curdist < max_dist2 && curdist < dist && diff.z <= cur->maxzdiff)
 		{
+			Log(Logs::General, Logs::Traps, "Trap %d is curdist %0.1f", cur->db_id, curdist);
 			dist = curdist;
 			current_trap = cur;
 		}
 	}
 
+	if (current_trap != nullptr)
+	{
+		Log(Logs::General, Logs::Traps, "Trap %d is the closest trap.", current_trap->db_id);
+		trap_curdist = dist;
+	}
+	else
+		 trap_curdist = INVALID_INDEX;
+
 	return current_trap;
 }
 
-Mob* EntityList::GetTrapTrigger(Trap* trap) {
-	Mob* savemob = 0;
+Mob* EntityList::GetTrapTrigger(Trap* trap)
+{
 
 	float maxdist = trap->radius * trap->radius;
-
-	for (auto it = client_list.begin(); it != client_list.end(); ++it) {
+	for (auto it = client_list.begin(); it != client_list.end(); ++it)
+	{
 		Client* cur = it->second;
 
 		auto diff = glm::vec3(cur->GetPosition()) - trap->m_Position;
 		diff.z = std::abs(diff.z);
 
 		if ((diff.x*diff.x + diff.y*diff.y) <= maxdist
-			&& diff.z < trap->maxzdiff)
+			&& diff.z <= trap->maxzdiff)
 		{
-			if (zone->random.Roll(trap->chance))
-				return(cur);
-			else
-				savemob = cur;
-		}
+			//This prevents the trap from triggering on players while zoning.
+			if (strcmp(cur->GetName(), "No name") == 0)
+				continue;
 
+			if (cur->trapid == 0 && !cur->GetGM() && (trap->chance == 0 || zone->random.Roll(trap->chance)))
+			{
+				Log(Logs::General, Logs::Traps, "%s is about to trigger trap %d of chance %d. diff: %0.2f maxdist: %0.2f zdiff: %0.2f maxzdiff: %0.2f", cur->GetName(), trap->trap_id, trap->chance, (diff.x*diff.x + diff.y*diff.y), maxdist, diff.z, trap->maxzdiff);
+				return cur;
+			}
+
+			if (cur->GetGM()) {
+				cur->Message(Chat::White, "Your GM flag prevents you from triggering a trap.");
+			}
+		}
+		else
+		{
+			if (cur->trapid == trap->trap_id)
+			{
+				Log(Logs::General, Logs::Traps, "%s is clearing trapid for trap %d", cur->GetName(), trap->trap_id);
+				cur->trapid = 0;
+			}
+		}
 	}
 
-	return savemob;
+	return nullptr;
 }
 
-//todo: rewrite this to not need direct access to trap members.
-bool ZoneDatabase::LoadTraps(const char* zonename, int16 version) {
+bool EntityList::IsTrapGroupSpawned(uint32 trap_id, uint8 group)
+{
+	auto it = trap_list.begin();
+	while (it != trap_list.end())
+	{
+		Trap* cur = it->second;
+		if (cur->IsTrap() && cur->group == group && cur->trap_id != trap_id)
+		{
+			return true;
+		}
+		++it;
+	}
 
-	std::string query = StringFormat("SELECT id, x, y, z, effect, effectvalue, effectvalue2, skill, "
-									"maxzdiff, radius, chance, message, respawn_time, respawn_var, level "
-									"FROM traps WHERE zone='%s' AND version=%u", zonename, version);
-	auto results = QueryDatabase(query);
-	if (!results.Success()) {
+	return false;
+}
+
+void EntityList::UpdateAllTraps(bool respawn, bool repopnow)
+{
+	auto it = trap_list.begin();
+	while (it != trap_list.end())
+	{
+		Trap* cur = it->second;
+		if (cur->IsTrap())
+		{
+			cur->UpdateTrap(respawn, repopnow);
+		}
+		++it;
+	}
+
+	Log(Logs::General, Logs::Traps, "All traps updated.");
+}
+
+void EntityList::GetTrapInfo(Client* c)
+{
+	uint32 trap_count  = 0;
+	uint32 trap_number = 1;
+
+	for (const auto& trap : trap_list) {
+		auto t = trap.second;
+		if (t->IsTrap()) {
+			const bool is_set = (t->chkarea_timer.Enabled() && !t->reset_timer.Enabled());
+
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Trap {} | ID: {} Active: {} Coordinates: {:.2f}, {:.2f}, {:.2f}",
+					trap_number,
+					t->trap_id,
+					is_set ? "Yes" : "No",
+					t->m_Position.x,
+					t->m_Position.y,
+					t->m_Position.z
+				).c_str()
+			);
+
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Trap {} | Times Triggered: {} Group: {}",
+					trap_number,
+					t->times_triggered,
+					t->group
+				).c_str()
+			);
+
+			if (!t->message.empty()) {
+				c->Message(
+					Chat::White,
+					fmt::format(
+						"Trap {} | Message: {}",
+						trap_number,
+						t->message
+					).c_str()
+				);
+			}
+
+			trap_count++;
+			trap_number++;
+		}
+	}
+
+	if (!trap_count) {
+		c->Message(Chat::White, "No traps were found.");
+		return;
+	}
+
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"{} Trap{} found.",
+			trap_count,
+			trap_count != 1 ? "s" : ""
+		).c_str()
+	);
+}
+
+void EntityList::ClearTrapPointers()
+{
+	auto it = trap_list.begin();
+	while (it != trap_list.end())
+	{
+		Trap* cur = it->second;
+		if (cur->IsTrap())
+		{
+			cur->DestroyHiddenTrigger();
+		}
+		++it;
+	}
+}
+
+
+
+
+bool ZoneDatabase::LoadTraps(const std::string& zone_short_name, int16 instance_version)
+{
+	const auto& l = TrapsRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`zone` = '{}' AND `version` = {} {}",
+			Strings::Escape(zone_short_name),
+			instance_version,
+			ContentFilterCriteria::apply()
+		)
+	);
+
+	if (l.empty()) {
 		return false;
 	}
 
-	for (auto row = results.begin(); row != results.end(); ++row) {
-		auto trap = new Trap();
-		trap->trap_id = atoi(row[0]);
-		trap->m_Position = glm::vec3(atof(row[1]), atof(row[2]), atof(row[3]));
-		trap->effect = atoi(row[4]);
-		trap->effectvalue = atoi(row[5]);
-		trap->effectvalue2 = atoi(row[6]);
-		trap->skill = atoi(row[7]);
-		trap->maxzdiff = atof(row[8]);
-		trap->radius = atof(row[9]);
-		trap->chance = atoi(row[10]);
-		trap->message = row[11];
-		trap->respawn_time = atoi(row[12]);
-		trap->respawn_var = atoi(row[13]);
-		trap->level = atoi(row[14]);
-		entity_list.AddTrap(trap);
-		trap->CreateHiddenTrigger();
+	for (const auto& e : l) {
+		if (e.group_) {
+			if (entity_list.IsTrapGroupSpawned(e.id, e.group_)) {
+				// If a member of our group is already spawned skip loading this trap.
+				continue;
+			}
+		}
+
+		auto t = new Trap();
+
+		t->trap_id                = e.id;
+		t->db_id                  = e.id;
+		t->m_Position             = glm::vec3(e.x, e.y, e.z);
+		t->effect                 = e.effect;
+		t->effectvalue            = e.effectvalue;
+		t->effectvalue2           = e.effectvalue2;
+		t->skill                  = e.skill;
+		t->maxzdiff               = e.maxzdiff;
+		t->radius                 = e.radius;
+		t->chance                 = e.chance;
+		t->message                = e.message;
+		t->respawn_time           = e.respawn_time;
+		t->respawn_var            = e.respawn_var;
+		t->level                  = e.level;
+		t->group                  = e.group_;
+		t->triggered_number       = e.triggered_number;
+		t->despawn_when_triggered = e.despawn_when_triggered;
+		t->undetectable           = e.undetectable;
+
+		entity_list.AddTrap(t);
+
+		t->CreateHiddenTrigger();
 	}
+
+	LogInfo(
+		"Loaded [{}] Trap{}",
+		Strings::Commify(l.size()),
+		l.size() != 1 ? "s" : ""
+	);
 
 	return true;
 }
@@ -294,16 +514,16 @@ void Trap::CreateHiddenTrigger()
 	if(hiddenTrigger)
 		return;
 
-	const NPCType *base_type = database.LoadNPCTypesData(500);
+	const NPCType *base_type = content_db.LoadNPCTypesData(500);
 	auto make_npc = new NPCType;
 	memcpy(make_npc, base_type, sizeof(NPCType));
 	make_npc->max_hp = 100000;
-	make_npc->cur_hp = 100000;
+	make_npc->current_hp = 100000;
 	strcpy(make_npc->name, "a_trap");
 	make_npc->runspeed = 0.0f;
-	make_npc->bodytype = BT_Special;
+	make_npc->bodytype = BodyType::Special;
 	make_npc->race = 127;
-	make_npc->gender = 0;
+	make_npc->gender = Gender::Male;
 	make_npc->loottable_id = 0;
 	make_npc->npc_spells_id = 0;
 	make_npc->d_melee_texture1 = 0;
@@ -311,10 +531,94 @@ void Trap::CreateHiddenTrigger()
 	make_npc->trackable = 0;
 	make_npc->level = level;
 	strcpy(make_npc->special_abilities, "19,1^20,1^24,1^25,1");
-	NPC* npca = new NPC(make_npc, nullptr, glm::vec4(m_Position, 0.0f), FlyMode3);
+	NPC* npca = new NPC(make_npc, nullptr, glm::vec4(m_Position, 0.0f), GravityBehavior::Flying);
 	npca->GiveNPCTypeData(make_npc);
 	entity_list.AddNPC(npca);
 
-	hiddenTrigger = npca;
-	ownHiddenTrigger = true;
+	SetHiddenTrigger(npca);
+}
+
+bool ZoneDatabase::SetTrapData(Trap* t, bool repop)
+{
+	const auto& l = TrapsRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`zone` = '{}' AND `id` = {}{}",
+			zone->GetShortName(),
+			t->db_id,
+			(
+				t->group ?
+				fmt::format(
+					" AND `group` = {} ORDER BY RAND() LIMIT 1",
+					t->group
+				) :
+				""
+			)
+		)
+	);
+
+	if (l.empty()) {
+		return false;
+	}
+
+	const uint32 before_id = t->db_id;
+
+	for (const auto& e : l) {
+		t->db_id                  = e.id;
+		t->m_Position             = glm::vec3(e.x, e.y, e.z);
+		t->effect                 = e.effect;
+		t->effectvalue            = e.effectvalue;
+		t->effectvalue2           = e.effectvalue2;
+		t->skill                  = e.skill;
+		t->maxzdiff               = e.maxzdiff;
+		t->radius                 = e.radius;
+		t->chance                 = e.chance;
+		t->message                = e.message;
+		t->respawn_var            = e.respawn_var;
+		t->level                  = e.level;
+		t->triggered_number       = e.triggered_number;
+		t->despawn_when_triggered = e.despawn_when_triggered;
+		t->undetectable           = e.undetectable;
+		t->respawn_time           = e.respawn_time;
+
+		t->CreateHiddenTrigger();
+
+
+		if (repop) {
+			t->chkarea_timer.Enable();
+		} else {
+			t->respawn_timer.Start((t->respawn_time + zone->random.Int(0, t->respawn_var)) * 1000);
+		}
+
+		if (t->trap_id != t->db_id) {
+			LogTraps("Trap ({}) DBID has changed from {} to {}.", t->trap_id, before_id, t->db_id);
+		}
+
+		return true;
+	}
+
+	return false;
+}
+
+void Trap::UpdateTrap(bool respawn, bool repopnow)
+{
+	respawn_timer.Disable();
+	chkarea_timer.Disable();
+	reset_timer.Disable();
+	if (hiddenTrigger)
+	{
+		hiddenTrigger->Depop();
+		SetHiddenTrigger(nullptr);
+	}
+	times_triggered = 0;
+	Client* trigger = entity_list.GetClientByCharID(charid);
+	if (trigger)
+	{
+		trigger->trapid = 0;
+	}
+	charid = 0;
+	if (respawn)
+	{
+		content_db.SetTrapData(this, repopnow);
+	}
 }
